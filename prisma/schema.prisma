@@ -1,0 +1,258 @@
+// PortaGast backend — Prisma schema
+// Data model for the applicant intake flow with GDPR-aware consent,
+// minimization, retention and audit fields.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Runtime-Verbindung. Bei Supabase: der Connection-Pooler (Port 6543).
+  url       = env("DATABASE_URL")
+  // Direkte Verbindung für Migrationen. Bei Supabase: Direct connection (Port 5432).
+  // Lokal darf DIRECT_URL identisch zu DATABASE_URL sein.
+  directUrl = env("DIRECT_URL")
+}
+
+// ── Verification challenges (OTP) ───────────────────────────────────────────
+// Codes are never stored in plaintext — only an HMAC hash is persisted.
+// The (contact, purpose) unique constraint serializes concurrent requests and
+// guarantees a single active challenge per contact (see OtpService).
+model OtpChallenge {
+  id          String        @id @default(uuid())
+  // Normalized contact (lowercased email or E.164 phone).
+  contact     String
+  channel     OtpChannel
+  purpose     OtpPurpose    @default(REGISTRATION)
+  // HMAC-SHA256 hash of the code (never the code itself).
+  codeHash    String
+  attempts    Int           @default(0)
+  maxAttempts Int
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime      @default(now())
+
+  @@unique([contact, purpose])
+  @@index([expiresAt])
+}
+
+enum OtpChannel {
+  EMAIL
+  SMS
+}
+
+enum OtpPurpose {
+  REGISTRATION
+}
+
+// ── OTP issuance log ─────────────────────────────────────────────────────────
+// Records only a keyed HASH of the contact so a rolling issuance cap can be
+// enforced (anti SMS-pumping / bombing) without persisting raw contact data.
+// Cleaned up by the retention job.
+model OtpIssuance {
+  id          String     @id @default(uuid())
+  contactHash String
+  channel     OtpChannel
+  createdAt   DateTime   @default(now())
+
+  @@index([contactHash, createdAt])
+  @@index([createdAt])
+}
+
+// ── Single-use verification tokens ──────────────────────────────────────────
+// A successful OTP mints a signed token carrying a random `jti`. The jti is
+// consumed here on first application submission; the unique PK makes replay
+// attempts fail atomically. Cleaned up after expiry by the retention job.
+model UsedVerificationToken {
+  jti       String   @id
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+// ── Applications ─────────────────────────────────────────────────────────────
+model Application {
+  id            String             @id @default(uuid())
+
+  // Personal data (PII).
+  firstName     String
+  lastName      String
+  // Data minimization: only the birth YEAR is retained; the full date is used
+  // transiently for the age check at submission and then discarded.
+  birthYear     Int?
+  ageVerified   Boolean            @default(false)
+  email         String
+  phone         String
+
+  // Search preferences.
+  profession    String?
+  federalState  String?
+  availability  String?
+
+  // Verification state — set only after a successful OTP check.
+  verified      Boolean            @default(false)
+  verifiedVia   OtpChannel?
+  verifiedAt    DateTime?
+
+  // Applicant's self-reported search intensity (post-submit question).
+  searchIntent  SearchIntent?
+
+  // GDPR consent captured at submission time.
+  consentAt     DateTime?
+  // Exact wording the frontend displayed + its version, for Art. 7(1) proof.
+  consentText   String?
+  consentVersion String?
+  // Separate, withdrawable consent for the optional profile photo.
+  consentPhoto  Boolean            @default(false)
+
+  status        ApplicationStatus  @default(SUBMITTED)
+
+  documents     Document[]
+
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  // Point in time after which the record is eligible for automated erasure.
+  retentionUntil DateTime?
+  // Excludes the record from automated erasure (e.g. pending AGG claim).
+  legalHold     Boolean            @default(false)
+  // Set when a data-subject / operator erasure was requested but object
+  // deletion has not yet fully succeeded (retry via the retention job).
+  erasureRequestedAt DateTime?
+  // Set only once the record is fully anonymized AND all objects are gone.
+  erasedAt      DateTime?
+
+  @@index([email])
+  @@index([status])
+  @@index([retentionUntil])
+  @@index([erasureRequestedAt])
+}
+
+enum ApplicationStatus {
+  SUBMITTED
+  IN_REVIEW
+  MATCHED
+  ARCHIVED
+  ERASED
+}
+
+enum SearchIntent {
+  ACTIVE
+  PASSIVE
+}
+
+// ── Documents (files in object storage) ─────────────────────────────────────
+// Only metadata lives in the DB. Binary content is stored in a private,
+// encrypted S3 bucket keyed by `storageKey`.
+model Document {
+  id            String        @id @default(uuid())
+  application   Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  applicationId String
+  type          DocumentType
+  // Opaque, randomized object key. Never derived from user input.
+  storageKey    String        @unique
+  // Original filename, sanitized. Kept for display only.
+  originalName  String
+  mimeType      String
+  sizeBytes     Int
+  // SHA-256 checksum of the stored bytes (integrity + dedupe).
+  checksum      String
+  createdAt     DateTime      @default(now())
+
+  @@index([applicationId])
+}
+
+enum DocumentType {
+  PHOTO
+  CV
+  QUALIFICATION
+}
+
+// ── Audit log ────────────────────────────────────────────────────────────────
+// Append-only trail of privileged / security-relevant actions.
+// Never stores raw PII — actor IPs are stored as a keyed (pseudonymizing) hash;
+// see the IP-hashing LIA. Retention-limited by the retention job.
+model AuditEvent {
+  id          String   @id @default(uuid())
+  action      String
+  entityType  String?
+  entityId    String?
+  // Optional actor attribution (e.g. admin key id). Never a raw secret.
+  actorId     String?
+  // Keyed hash of the request IP (not the raw address).
+  actorIpHash String?
+  // Convention: metadata MUST NOT contain raw PII.
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([action])
+  @@index([createdAt])
+}
+
+// ── User accounts (registration + login) ────────────────────────────────────
+// Email + password login. Passwords are stored only as a scrypt hash
+// (algo$params$salt$hash) — never in plaintext. `tokenVersion` is embedded in
+// issued JWTs and bumped on logout / password reset to invalidate old tokens.
+model User {
+  id           String     @id @default(uuid())
+  // Normalized (lowercased) email — the unique login identifier.
+  email        String     @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  phone        String
+  status       UserStatus @default(ACTIVE)
+  // Stateless-JWT revocation counter. A JWT is only accepted while its `ver`
+  // claim matches this value.
+  tokenVersion Int        @default(0)
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  passwordResets PasswordReset[]
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+// ── Registration wizard drafts ──────────────────────────────────────────────
+// Holds progress through the multi-step onboarding BEFORE an account exists.
+// Steps 1–5 are PLACEHOLDERS — their fields are not defined yet, so their
+// payloads are captured opaquely in `stepData`. The final contact step
+// (firstName/lastName/email/phone + password) promotes the draft into a User.
+// Pruned by the retention job once completed or expired.
+model RegistrationDraft {
+  id          String    @id @default(uuid())
+  // Highest wizard step reached (0 = just started, 6 = contact captured).
+  currentStep Int       @default(0)
+  // Per-step payloads keyed by step number ("1".."5"). Opaque until the flow
+  // is finalized. MUST NOT be relied on for anything security-relevant.
+  stepData    Json      @default("{}")
+  // Set once the draft has been promoted to a User (single-use).
+  completedAt DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([expiresAt])
+}
+
+// ── Password reset challenges ───────────────────────────────────────────────
+// A reset request mints a single-use, high-entropy token; only its SHA-256
+// hash is persisted (the token is 256-bit random, so an unkeyed hash is
+// sufficient — no pepper needed, unlike the low-entropy OTP codes).
+model PasswordReset {
+  id         String    @id @default(uuid())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}

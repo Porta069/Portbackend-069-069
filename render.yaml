@@ -1,0 +1,101 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Render Blueprint — PortaWerk Backend (NestJS + Prisma, Docker)
+#
+# Deploy:  Render Dashboard → New → Blueprint → dieses Repo wählen → Apply.
+# Render liest diese Datei, baut das Dockerfile und legt den Web-Service an.
+#
+# Variablen mit `sync: false` musst du EINMALIG im Render-Dashboard eintragen
+# (echte Secrets werden nie in Git committet). Variablen mit `generateValue:true`
+# erzeugt Render automatisch. Alles andere hat sichere Defaults.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: portawerk-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: frankfurt          # EU — DSGVO-Datenresidenz (S3_REGION muss eu-* sein)
+    plan: starter
+    autoDeploy: true           # Auto-Deploy bei jedem Push auf den Branch
+    healthCheckPath: /api/v1/health
+    envVars:
+      # ── Runtime ──────────────────────────────────────────────────────────
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: TRUST_PROXY_HOPS
+        value: 1
+      # Öffentliche URL dieses Services — nach dem 1. Deploy eintragen,
+      # z.B. https://portawerk-backend.onrender.com
+      - key: APP_URL
+        sync: false
+      # Erlaubte Frontend-Origins (Komma-getrennt), z.B. https://deine-frontend-domain
+      - key: CORS_ORIGINS
+        sync: false
+
+      # ── Datenbank (von Render verwaltetes PostgreSQL) ────────────────────
+      # Trage hier die "External Database URL" der unten definierten Render-DB
+      # ein (endet auf ?sslmode=require — vom Backend in Production verlangt).
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+
+      # ── Krypto-Secrets (von Render auto-generiert, je 32+ Zeichen) ────────
+      - key: OTP_HASHING_SECRET
+        generateValue: true
+      - key: VERIFICATION_TOKEN_SECRET
+        generateValue: true
+      - key: AUDIT_IP_PEPPER
+        generateValue: true
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: AUTH_JWT_SECRET
+        generateValue: true
+
+      # ── E-Mail (Resend — in Production Pflicht) ──────────────────────────
+      - key: EMAIL_PROVIDER
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false            # z.B. "PortaWerk <noreply@deine-domain.de>"
+
+      # ── SMS (Twilio — in Production Pflicht) ─────────────────────────────
+      - key: SMS_PROVIDER
+        value: twilio
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: SMS_ALLOWED_COUNTRY_PREFIXES
+        value: "+49,+43,+41"
+
+      # ── Objektspeicher (S3-kompatibel — Uploads) ─────────────────────────
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: S3_ENDPOINT
+        sync: false            # https://… (AWS S3 leer lassen; Supabase Storage: S3-Endpoint)
+      - key: S3_REGION
+        value: eu-central-1
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_FORCE_PATH_STYLE
+        value: "true"          # true für Supabase/MinIO; für AWS S3 auf "false"
+      - key: S3_SERVER_SIDE_ENCRYPTION
+        value: AES256
+
+# ── Von Render verwaltete PostgreSQL-Datenbank ───────────────────────────────
+databases:
+  - name: portawerk-db
+    databaseName: portawerk
+    user: portawerk
+    region: frankfurt          # gleiche Region wie der Web-Service
+    plan: basic-256mb          # kleinster bezahlter Plan (freier Plan läuft nach 30 Tagen aus)

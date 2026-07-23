@@ -1,0 +1,35 @@
+# Dependencies
+/node_modules
+
+# Build output
+/dist
+/build
+*.tsbuildinfo
+
+# Environment & secrets — NEVER commit real credentials
+.env
+.env.*
+!.env.example
+
+# Prisma
+/prisma/*.db
+/prisma/migrations/dev.db*
+
+# Logs
+*.log
+npm-debug.log*
+logs
+
+# Coverage / tests
+/coverage
+/.nyc_output
+
+# OS / editor
+.DS_Store
+.idea
+.vscode
+*.pem
+*.key
+
+# Local dev volumes
+/.data
