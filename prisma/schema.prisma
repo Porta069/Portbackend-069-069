@@ -202,6 +202,11 @@ model User {
   firstName    String
   lastName     String
   phone        String
+  // Account type. APPLICANT = self-registered Handwerker; EMPLOYER = company
+  // account, provisioned manually after an email contact + signed contract.
+  role         UserRole   @default(APPLICANT)
+  // Only set for EMPLOYER accounts.
+  companyName  String?
   status       UserStatus @default(ACTIVE)
   // Stateless-JWT revocation counter. A JWT is only accepted while its `ver`
   // claim matches this value.
@@ -216,6 +221,11 @@ model User {
 enum UserStatus {
   ACTIVE
   DISABLED
+}
+
+enum UserRole {
+  APPLICANT
+  EMPLOYER
 }
 
 // ── Registration wizard drafts ──────────────────────────────────────────────

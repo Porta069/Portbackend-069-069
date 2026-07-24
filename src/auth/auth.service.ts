@@ -28,6 +28,8 @@ export interface PublicUser {
   firstName: string;
   lastName: string;
   phone: string;
+  role: User['role'];
+  companyName: string | null;
   status: User['status'];
   createdAt: string;
   lastLoginAt: string | null;
@@ -416,6 +418,8 @@ export class AuthService {
       firstName: user.firstName,
       lastName: user.lastName,
       phone: user.phone,
+      role: user.role,
+      companyName: user.companyName ?? null,
       status: user.status,
       createdAt: user.createdAt.toISOString(),
       lastLoginAt: user.lastLoginAt ? user.lastLoginAt.toISOString() : null,
