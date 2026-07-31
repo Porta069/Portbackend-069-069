@@ -13,6 +13,7 @@ import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { OtpModule } from './otp/otp.module';
 import { ApplicationsModule } from './applications/applications.module';
+import { PartnerModule } from './partner/partner.module';
 import { RetentionModule } from './retention/retention.module';
 import { HealthModule } from './health/health.module';
 
@@ -76,6 +77,7 @@ import { HealthModule } from './health/health.module';
     AuthModule,
     OtpModule,
     ApplicationsModule,
+    PartnerModule,
     RetentionModule,
     HealthModule,
   ],

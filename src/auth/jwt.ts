@@ -10,9 +10,10 @@ import { safeEqual } from '../common/crypto/crypto.util';
  * Two token purposes share the format and signing key:
  *  - `access`       — the session token returned by login / registration.
  *  - `registration` — binds a client to its in-progress registration draft.
+ *  - `partner`      — the session token for a referral/affiliate partner.
  */
 
-export type JwtPurpose = 'access' | 'registration';
+export type JwtPurpose = 'access' | 'registration' | 'partner';
 
 export interface JwtPayload {
   sub: string; // user id (access) or draft id (registration)
@@ -72,7 +73,9 @@ export function verifyJwt(token: string, secret: string): JwtPayload | null {
       !payload ||
       typeof payload.sub !== 'string' ||
       payload.sub.length === 0 ||
-      (payload.purpose !== 'access' && payload.purpose !== 'registration') ||
+      (payload.purpose !== 'access' &&
+        payload.purpose !== 'registration' &&
+        payload.purpose !== 'partner') ||
       typeof payload.exp !== 'number' ||
       typeof payload.iat !== 'number'
     ) {

@@ -39,6 +39,7 @@ import { PLACEHOLDER_STEPS, TOTAL_STEPS } from './registration-steps';
 import { CompleteRegistrationDto } from './dto/complete-registration.dto';
 import { UpdateProfileDto } from './dto/account.dto';
 import { OtpService } from '../otp/otp.service';
+import { PartnerService } from '../partner/partner.service';
 
 export interface PublicUser {
   id: string;
@@ -85,6 +86,7 @@ export class AuthService {
     private readonly audit: AuditService,
     private readonly email: EmailService,
     private readonly otp: OtpService,
+    private readonly partner: PartnerService,
   ) {
     this.cfg = config.get<AuthConfig>('auth')!;
   }
@@ -241,6 +243,16 @@ export class AuthService {
       actorId: user.id,
       ip,
     });
+
+    // If the applicant arrived via a partner's referral link, credit the
+    // partner (best-effort; never blocks or fails registration).
+    if (dto.referredBy) {
+      await this.partner.linkReferral(dto.referredBy, {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+      });
+    }
 
     return this.issueSession(user);
   }

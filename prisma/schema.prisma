@@ -262,6 +262,81 @@ model RegistrationDraft {
   @@index([expiresAt])
 }
 
+// ── Referral partners (affiliate program) ───────────────────────────────────
+// A partner signs up (phone + password, SMS-verified) and gets a personal
+// referral link portawerk.de/r/<slug>. When a Handwerker registers via that
+// link and is successfully placed into a job, the partner earns a fixed reward.
+model Partner {
+  id            String     @id @default(uuid())
+  name          String
+  // Chosen, unique referral slug used in the public link (portawerk.de/r/<slug>).
+  slug          String     @unique
+  // E.164 phone — the login identifier + SMS-verification target.
+  phone         String     @unique
+  email         String?
+  passwordHash  String
+  status        UserStatus @default(ACTIVE)
+  // Partners are provisioned only after an SMS check, so they start verified.
+  phoneVerified Boolean    @default(true)
+  // Optional payout details the partner enters to receive their reward.
+  payoutIban    String?
+  payoutHolder  String?
+  // Stateless-JWT revocation counter (same mechanism as User).
+  tokenVersion  Int        @default(0)
+  lastLoginAt   DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  referrals     Referral[]
+
+  @@index([slug])
+}
+
+// ── Referrals (a person the partner brought in) ─────────────────────────────
+// Created when a Handwerker registers with ?ref=<slug>. Tracks the placement
+// lifecycle + the reward. A candidate snapshot (first name + trade) is stored
+// so the dashboard can show progress without exposing full applicant PII.
+model Referral {
+  id             String         @id @default(uuid())
+  partner        Partner        @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  partnerId      String
+  // The registered applicant account, if linked (one referral per user).
+  referredUserId String?        @unique
+  // Display snapshot for the partner dashboard (e.g. "Thomas M." + "Elektriker").
+  candidateName  String?
+  candidateTrade String?
+  status         ReferralStatus @default(REGISTERED)
+  // Reward in euro cents; set when the placement succeeds.
+  rewardCents    Int            @default(0)
+  placedAt       DateTime?
+  paidAt         DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([partnerId])
+  @@index([status])
+}
+
+enum ReferralStatus {
+  REGISTERED // geworben — signed up via the link
+  IN_PLACEMENT // vermittlung — in an active placement process
+  PLACED // vermittelt — successfully placed (reward earned)
+  PAID // ausgezahlt — reward paid out
+}
+
+// ── Referral link clicks ────────────────────────────────────────────────────
+// Lightweight click counter for the /r/<slug> redirect. Stores only a keyed
+// hash of the IP (dedupe/anti-abuse), never the raw address. Retention-pruned.
+model ReferralClick {
+  id        String   @id @default(uuid())
+  slug      String
+  ipHash    String?
+  createdAt DateTime @default(now())
+
+  @@index([slug])
+  @@index([createdAt])
+}
+
 // ── Password reset challenges ───────────────────────────────────────────────
 // A reset request mints a single-use, high-entropy token; only its SHA-256
 // hash is persisted (the token is 256-bit random, so an unkeyed hash is
