@@ -287,6 +287,146 @@ export class PartnerService {
     return this.toPublic(updated);
   }
 
+  // ── Account self-service (settings) ─────────────────────────────────────────
+
+  /** PATCH /partner/me — edit name, email, phone (slug is immutable). */
+  async updateProfile(
+    payload: JwtPayload,
+    dto: {
+      name?: string;
+      email?: string;
+      phone?: string;
+    },
+    ip?: string,
+  ): Promise<PublicPartner> {
+    const partner = await this.getActivePartner(payload);
+    const data: Prisma.PartnerUpdateInput = {};
+    if (dto.name !== undefined) data.name = dto.name.trim();
+    if (dto.email !== undefined) {
+      // Empty string clears the optional email.
+      data.email = dto.email.trim() ? dto.email.trim().toLowerCase() : null;
+    }
+    if (dto.phone !== undefined) {
+      const phone = normalizePhone(dto.phone);
+      if (!isValidPhone(phone)) {
+        throw new BadRequestException('Invalid phone number');
+      }
+      data.phone = phone;
+      // A changed number is no longer proven — drop the verified flag.
+      if (phone !== partner.phone) data.phoneVerified = false;
+    }
+    try {
+      const updated = await this.prisma.partner.update({
+        where: { id: partner.id },
+        data,
+      });
+      await this.audit.record({
+        action: 'partner.profile_updated',
+        entityType: 'Partner',
+        entityId: partner.id,
+        actorId: partner.id,
+        ip,
+      });
+      return this.toPublic(updated);
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          'An account with this phone number already exists',
+        );
+      }
+      throw err;
+    }
+  }
+
+  /** Changes the password (requires the current one) and re-issues the session. */
+  async changePassword(
+    payload: JwtPayload,
+    currentPassword: string,
+    newPassword: string,
+    ip?: string,
+  ): Promise<PartnerSession> {
+    const partner = await this.getActivePartner(payload);
+    const ok = await verifyPassword(currentPassword, partner.passwordHash);
+    if (!ok) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+    const passwordHash = await hashPassword(newPassword);
+    // Bumping tokenVersion revokes every OTHER session; re-issue for this one.
+    const updated = await this.prisma.partner.update({
+      where: { id: partner.id },
+      data: { passwordHash, tokenVersion: { increment: 1 } },
+    });
+    await this.audit.record({
+      action: 'partner.password_changed',
+      entityType: 'Partner',
+      entityId: partner.id,
+      actorId: partner.id,
+      ip,
+    });
+    return this.issueSession(updated);
+  }
+
+  /** Permanently deletes the partner account (referrals cascade-delete). */
+  async deleteAccount(
+    payload: JwtPayload,
+    password: string,
+    ip?: string,
+  ): Promise<void> {
+    const partner = await this.getActivePartner(payload);
+    const ok = await verifyPassword(password, partner.passwordHash);
+    if (!ok) throw new UnauthorizedException('Password is incorrect');
+    await this.audit.record({
+      action: 'partner.deleted',
+      entityType: 'Partner',
+      entityId: partner.id,
+      actorId: partner.id,
+      ip,
+    });
+    await this.prisma.partner.delete({ where: { id: partner.id } });
+  }
+
+  /** GDPR data export — everything we hold about the partner (no secrets). */
+  async exportData(payload: JwtPayload): Promise<Record<string, unknown>> {
+    const partner = await this.getActivePartner(payload);
+    const referrals = await this.prisma.referral.findMany({
+      where: { partnerId: partner.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    const clickCount = await this.prisma.referralClick.count({
+      where: { slug: partner.slug },
+    });
+    return {
+      exportedAt: new Date().toISOString(),
+      account: {
+        id: partner.id,
+        name: partner.name,
+        slug: partner.slug,
+        link: `portawerk.de/r/${partner.slug}`,
+        phone: partner.phone,
+        email: partner.email,
+        phoneVerified: partner.phoneVerified,
+        status: partner.status,
+        payoutIban: partner.payoutIban,
+        payoutHolder: partner.payoutHolder,
+        createdAt: partner.createdAt.toISOString(),
+        lastLoginAt: partner.lastLoginAt?.toISOString() ?? null,
+      },
+      referrals: referrals.map((r) => ({
+        candidateName: r.candidateName,
+        candidateTrade: r.candidateTrade,
+        status: r.status,
+        rewardCents: r.rewardCents,
+        placedAt: r.placedAt?.toISOString() ?? null,
+        paidAt: r.paidAt?.toISOString() ?? null,
+        createdAt: r.createdAt.toISOString(),
+      })),
+      linkClicks: clickCount,
+    };
+  }
+
   // ── Dashboard aggregation ─────────────────────────────────────────────────
 
   async dashboard(payload: JwtPayload): Promise<Record<string, unknown>> {

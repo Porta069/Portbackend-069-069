@@ -21,6 +21,11 @@ import { RegisterPartnerDto } from './dto/register-partner.dto';
 import { LoginPartnerDto } from './dto/login-partner.dto';
 import { UpdatePayoutDto } from './dto/payout.dto';
 import { AdminReferralStatusDto } from './dto/admin-referral-status.dto';
+import {
+  PartnerChangePasswordDto,
+  PartnerDeleteAccountDto,
+  UpdatePartnerProfileDto,
+} from './dto/partner-account.dto';
 
 @Controller('partner')
 export class PartnerController {
@@ -83,6 +88,55 @@ export class PartnerController {
   @UseGuards(PartnerAuthGuard)
   payout(@CurrentUser() user: JwtPayload, @Body() dto: UpdatePayoutDto) {
     return this.partner.updatePayout(user, dto);
+  }
+
+  /** Edit profile (name, email, phone — slug is immutable). */
+  @Patch('me')
+  @UseGuards(PartnerAuthGuard)
+  updateMe(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdatePartnerProfileDto,
+    @ClientIp() ip: string,
+  ) {
+    return this.partner.updateProfile(user, dto, ip);
+  }
+
+  /** Change password (requires the current one); returns a fresh session. */
+  @Post('password/change')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(PartnerAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  changePassword(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: PartnerChangePasswordDto,
+    @ClientIp() ip: string,
+  ) {
+    return this.partner.changePassword(
+      user,
+      dto.currentPassword,
+      dto.newPassword,
+      ip,
+    );
+  }
+
+  /** Permanently delete the partner account (password-confirmed). */
+  @Post('account/delete')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(PartnerAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async deleteAccount(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: PartnerDeleteAccountDto,
+    @ClientIp() ip: string,
+  ) {
+    await this.partner.deleteAccount(user, dto.password, ip);
+  }
+
+  /** GDPR data export. */
+  @Get('me/export')
+  @UseGuards(PartnerAuthGuard)
+  exportData(@CurrentUser() user: JwtPayload) {
+    return this.partner.exportData(user);
   }
 
   // ── Admin (server-to-server, x-admin-api-key) ───────────────────────────────
