@@ -37,6 +37,7 @@ const DISPOSABLE_DOMAINS = new Set([
 import { JwtPayload, signJwt, verifyJwt } from './jwt';
 import { PLACEHOLDER_STEPS, TOTAL_STEPS } from './registration-steps';
 import { CompleteRegistrationDto } from './dto/complete-registration.dto';
+import { UpdateProfileDto } from './dto/account.dto';
 
 export interface PublicUser {
   id: string;
@@ -234,6 +235,7 @@ export class AuthService {
     emailInput: string,
     password: string,
     ip?: string,
+    userAgent?: string,
   ): Promise<AuthSession> {
     const email = normalizeEmail(emailInput);
     const invalid = new UnauthorizedException('Invalid email or password');
@@ -265,6 +267,7 @@ export class AuthService {
       entityId: user.id,
       actorId: user.id,
       ip,
+      metadata: userAgent ? { userAgent: userAgent.slice(0, 400) } : undefined,
     });
 
     return this.issueSession(updated);
@@ -345,6 +348,170 @@ export class AuthService {
       // No MX (or lookup failed) — treat as not deliverable but non-fatal.
       return { deliverable: false, reason: 'no_mx' };
     }
+  }
+
+  // ── Account management (self-service) ───────────────────────────────────────
+
+  /** PATCH /auth/me — edit name, phone and onboarding answers. */
+  async updateProfile(
+    payload: JwtPayload,
+    dto: UpdateProfileDto,
+    ip?: string,
+  ): Promise<PublicUser> {
+    const user = await this.getActiveUser(payload);
+    const data: Prisma.UserUpdateInput = {};
+    if (dto.firstName !== undefined) data.firstName = dto.firstName.trim();
+    if (dto.lastName !== undefined) data.lastName = dto.lastName.trim();
+    if (dto.phone !== undefined) {
+      const phone = normalizePhone(dto.phone);
+      if (!isValidPhone(phone)) {
+        throw new BadRequestException('Invalid phone number');
+      }
+      data.phone = phone;
+    }
+    if (dto.profileData !== undefined) {
+      data.profileData = dto.profileData as Prisma.InputJsonValue;
+    }
+    const updated = await this.prisma.user.update({
+      where: { id: user.id },
+      data,
+    });
+    await this.audit.record({
+      action: 'user.profile_updated',
+      entityType: 'User',
+      entityId: user.id,
+      actorId: user.id,
+      ip,
+    });
+    return this.toPublic(updated);
+  }
+
+  /** Changes the password (requires the current one) and re-issues the session. */
+  async changePassword(
+    payload: JwtPayload,
+    currentPassword: string,
+    newPassword: string,
+    ip?: string,
+  ): Promise<AuthSession> {
+    const user = await this.getActiveUser(payload);
+    const ok = await verifyPassword(currentPassword, user.passwordHash);
+    if (!ok) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+    const passwordHash = await hashPassword(newPassword);
+    // Bumping tokenVersion revokes every OTHER session; re-issue for this one.
+    const updated = await this.prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash, tokenVersion: { increment: 1 } },
+    });
+    await this.audit.record({
+      action: 'user.password_changed',
+      entityType: 'User',
+      entityId: user.id,
+      actorId: user.id,
+      ip,
+    });
+    return this.issueSession(updated);
+  }
+
+  /** Changes the email (requires the password to confirm). */
+  async changeEmail(
+    payload: JwtPayload,
+    password: string,
+    newEmailInput: string,
+    ip?: string,
+  ): Promise<PublicUser> {
+    const user = await this.getActiveUser(payload);
+    const ok = await verifyPassword(password, user.passwordHash);
+    if (!ok) throw new UnauthorizedException('Password is incorrect');
+    const email = normalizeEmail(newEmailInput);
+    const existing = await this.prisma.user.findUnique({ where: { email } });
+    if (existing && existing.id !== user.id) {
+      throw new ConflictException('This email is already in use');
+    }
+    const updated = await this.prisma.user.update({
+      where: { id: user.id },
+      data: { email },
+    });
+    await this.audit.record({
+      action: 'user.email_changed',
+      entityType: 'User',
+      entityId: user.id,
+      actorId: user.id,
+      ip,
+    });
+    return this.toPublic(updated);
+  }
+
+  /** Permanently deletes the account (requires the password to confirm). */
+  async deleteAccount(
+    payload: JwtPayload,
+    password: string,
+    ip?: string,
+  ): Promise<void> {
+    const user = await this.getActiveUser(payload);
+    const ok = await verifyPassword(password, user.passwordHash);
+    if (!ok) throw new UnauthorizedException('Password is incorrect');
+    await this.audit.record({
+      action: 'user.deleted',
+      entityType: 'User',
+      entityId: user.id,
+      actorId: user.id,
+      ip,
+    });
+    await this.prisma.user.delete({ where: { id: user.id } });
+  }
+
+  /** GDPR data export — everything we hold about the user (no secrets). */
+  async exportData(payload: JwtPayload): Promise<Record<string, unknown>> {
+    const user = await this.getActiveUser(payload);
+    return {
+      exportedAt: new Date().toISOString(),
+      account: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        role: user.role,
+        companyName: user.companyName,
+        referredBy: user.referredBy,
+        status: user.status,
+        createdAt: user.createdAt.toISOString(),
+        lastLoginAt: user.lastLoginAt
+          ? user.lastLoginAt.toISOString()
+          : null,
+      },
+      onboardingAnswers: user.profileData ?? null,
+    };
+  }
+
+  /** Recent account activity (logins etc.) for the security screen. */
+  async loginActivity(
+    payload: JwtPayload,
+  ): Promise<Array<{ at: string; action: string; device: string | null }>> {
+    const user = await this.getActiveUser(payload);
+    const events = await this.prisma.auditEvent.findMany({
+      where: {
+        actorId: user.id,
+        action: {
+          in: [
+            'auth.login',
+            'auth.logout',
+            'user.password_changed',
+            'auth.login_failed',
+          ],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 25,
+    });
+    return events.map((e) => ({
+      at: e.createdAt.toISOString(),
+      action: e.action,
+      device:
+        (e.metadata as { userAgent?: string } | null)?.userAgent ?? null,
+    }));
   }
 
   // ── Password reset ──────────────────────────────────────────────────────────

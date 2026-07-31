@@ -2,8 +2,10 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -19,6 +21,12 @@ import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { CheckEmailDto } from './dto/check-email.dto';
+import {
+  UpdateProfileDto,
+  ChangePasswordDto,
+  ChangeEmailDto,
+  DeleteAccountDto,
+} from './dto/account.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -66,8 +74,12 @@ export class AuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  login(@Body() dto: LoginDto, @ClientIp() ip: string) {
-    return this.auth.login(dto.email, dto.password, ip);
+  login(
+    @Body() dto: LoginDto,
+    @ClientIp() ip: string,
+    @Headers('user-agent') userAgent: string,
+  ) {
+    return this.auth.login(dto.email, dto.password, ip, userAgent);
   }
 
   @Get('me')
@@ -81,6 +93,73 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   logout(@CurrentUser() user: JwtPayload, @ClientIp() ip: string) {
     return this.auth.logout(user, ip);
+  }
+
+  // ── Account self-service ────────────────────────────────────────────────────
+
+  /** Edit name, phone and onboarding answers. */
+  @Patch('me')
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  updateProfile(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdateProfileDto,
+    @ClientIp() ip: string,
+  ) {
+    return this.auth.updateProfile(user, dto, ip);
+  }
+
+  /** GDPR data export. */
+  @Get('me/export')
+  @UseGuards(JwtAuthGuard)
+  exportData(@CurrentUser() user: JwtPayload) {
+    return this.auth.exportData(user);
+  }
+
+  /** Recent login activity for the security screen. */
+  @Get('me/activity')
+  @UseGuards(JwtAuthGuard)
+  activity(@CurrentUser() user: JwtPayload) {
+    return this.auth.loginActivity(user);
+  }
+
+  /** Change password (requires current one); returns a fresh session. */
+  @Post('password/change')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  changePassword(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ChangePasswordDto,
+    @ClientIp() ip: string,
+  ) {
+    return this.auth.changePassword(user, dto.currentPassword, dto.newPassword, ip);
+  }
+
+  /** Change email (requires password). */
+  @Post('email/change')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  changeEmail(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ChangeEmailDto,
+    @ClientIp() ip: string,
+  ) {
+    return this.auth.changeEmail(user, dto.password, dto.newEmail, ip);
+  }
+
+  /** Permanently delete the account (requires password). */
+  @Post('account/delete')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  deleteAccount(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: DeleteAccountDto,
+    @ClientIp() ip: string,
+  ) {
+    return this.auth.deleteAccount(user, dto.password, ip);
   }
 
   // ── Password reset ──────────────────────────────────────────────────────────
