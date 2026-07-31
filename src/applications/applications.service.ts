@@ -62,6 +62,16 @@ export class ApplicationsService {
     if (Number.isNaN(dob.getTime())) {
       throw new BadRequestException('Invalid birth date');
     }
+    // Reject impossible calendar dates (e.g. 1990-02-31): the Date constructor
+    // silently rolls them over, so verify the parsed value round-trips exactly.
+    const [y, mo, d] = birthDate.split('-').map(Number);
+    if (
+      dob.getUTCFullYear() !== y ||
+      dob.getUTCMonth() + 1 !== mo ||
+      dob.getUTCDate() !== d
+    ) {
+      throw new BadRequestException('Invalid birth date');
+    }
     const now = new Date();
     let age = now.getUTCFullYear() - dob.getUTCFullYear();
     const m = now.getUTCMonth() - dob.getUTCMonth();
@@ -347,6 +357,14 @@ export class ApplicationsService {
       include: { documents: true },
     });
     if (!app) throw new NotFoundException('Application not found');
+
+    // A record under legal hold must not be destroyed — mirror the guard the
+    // retention job already applies, so the manual erase path can't override it.
+    if (app.legalHold) {
+      throw new ForbiddenException(
+        'Application is under legal hold and cannot be erased',
+      );
+    }
 
     if (!app.erasureRequestedAt) {
       await this.prisma.application.update({

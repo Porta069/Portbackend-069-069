@@ -143,6 +143,12 @@ export class AuthService {
       [String(step)]: data ?? {},
     };
 
+    // Bound the accumulated wizard JSON (anti-abuse / storage bloat) — mirrors
+    // the cap enforced on profileData in updateProfile.
+    if (JSON.stringify(stepData).length > 200_000) {
+      throw new BadRequestException('Registration data is too large');
+    }
+
     const updated = await this.prisma.registrationDraft.update({
       where: { id: draft.id },
       data: {
@@ -191,6 +197,12 @@ export class AuthService {
             'Registration session is no longer valid',
           );
         }
+        // Guard the JSON copied into profileData with the same cap as
+        // updateProfile, so the registration path can't bypass it.
+        const profileData = (fresh.stepData ?? {}) as Prisma.InputJsonValue;
+        if (JSON.stringify(profileData).length > 200_000) {
+          throw new BadRequestException('Registration data is too large');
+        }
         const created = await tx.user.create({
           data: {
             email,
@@ -201,7 +213,7 @@ export class AuthService {
             referredBy: dto.referredBy?.trim() || null,
             // Persist every onboarding answer (survey step 1 + AI step 4) so the
             // full profile is queryable per-user later.
-            profileData: (fresh.stepData ?? {}) as Prisma.InputJsonValue,
+            profileData,
           },
         });
         await tx.registrationDraft.update({
@@ -373,6 +385,9 @@ export class AuthService {
         throw new BadRequestException('Invalid phone number');
       }
       data.phone = phone;
+      // A changed number is no longer proven — drop the verified flag so it
+      // can't report "verified" for a number the user never confirmed.
+      if (phone !== user.phone) data.phoneVerified = false;
     }
     if (dto.profileData !== undefined) {
       // Bound the JSON size to keep rows small (anti-abuse / storage bloat).
@@ -480,7 +495,12 @@ export class AuthService {
     }
     const updated = await this.prisma.user.update({
       where: { id: user.id },
-      data: { email },
+      data: {
+        email,
+        // A changed address is no longer proven — require re-verification so
+        // the account can't claim "verified" for an unproven mailbox.
+        ...(email !== user.email ? { emailVerified: false } : {}),
+      },
     });
     await this.audit.record({
       action: 'user.email_changed',
