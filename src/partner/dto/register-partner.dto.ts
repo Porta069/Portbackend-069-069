@@ -43,8 +43,12 @@ export class RegisterPartnerDto {
   })
   slug!: string;
 
-  // Proof the phone was SMS-verified (from POST /otp/verify).
+  // Optional proof the phone was SMS-verified (from POST /otp/verify). When
+  // present it must be valid and match the phone → the partner is marked
+  // phoneVerified. Optional so signup works before SMS delivery is configured
+  // (mirrors the applicant flow, which also does not hard-require OTP).
+  @IsOptional()
   @IsString()
   @MaxLength(500)
-  verificationToken!: string;
+  verificationToken?: string;
 }

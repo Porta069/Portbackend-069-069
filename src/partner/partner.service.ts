@@ -119,15 +119,23 @@ export class PartnerService {
       throw new BadRequestException('Invalid phone number');
     }
 
-    // Require proof the phone was SMS-verified, and that the token matches it.
-    const proof = verifyVerificationToken(
-      dto.verificationToken,
-      this.verificationTokenSecret,
-    );
-    if (!proof || proof.channel !== 'SMS' || proof.contact !== phone) {
-      throw new ForbiddenException(
-        'Phone verification is missing or does not match',
+    // If a verification token is supplied it MUST be valid and match this phone
+    // (→ phoneVerified). Absent is allowed so signup works before SMS delivery
+    // is configured; a supplied-but-wrong token is still rejected.
+    let phoneVerified = false;
+    let usedJti: { jti: string; exp: number } | null = null;
+    if (dto.verificationToken) {
+      const proof = verifyVerificationToken(
+        dto.verificationToken,
+        this.verificationTokenSecret,
       );
+      if (!proof || proof.channel !== 'SMS' || proof.contact !== phone) {
+        throw new ForbiddenException(
+          'Phone verification is invalid or does not match',
+        );
+      }
+      phoneVerified = true;
+      usedJti = { jti: proof.jti, exp: proof.exp };
     }
 
     // Fail early on taken slug / phone (also guarded by unique indexes).
@@ -144,24 +152,27 @@ export class PartnerService {
 
     const passwordHash = await hashPassword(dto.password);
 
+    const createData = {
+      name: dto.name.trim(),
+      slug,
+      phone,
+      email: dto.email?.trim() || null,
+      passwordHash,
+      phoneVerified,
+    };
+
     let partner: Partner;
     try {
-      // Consume the verification token's jti in the same transaction so one SMS
-      // check can create at most one partner (replay protection).
-      partner = await this.prisma.$transaction(async (tx) => {
-        await tx.usedVerificationToken.create({
-          data: { jti: proof.jti, expiresAt: new Date(proof.exp) },
-        });
-        return tx.partner.create({
-          data: {
-            name: dto.name.trim(),
-            slug,
-            phone,
-            email: dto.email?.trim() || null,
-            passwordHash,
-          },
-        });
-      });
+      // When a token was used, consume its jti in the same transaction so one
+      // SMS check can create at most one partner (replay protection).
+      partner = usedJti
+        ? await this.prisma.$transaction(async (tx) => {
+            await tx.usedVerificationToken.create({
+              data: { jti: usedJti!.jti, expiresAt: new Date(usedJti!.exp) },
+            });
+            return tx.partner.create({ data: createData });
+          })
+        : await this.prisma.partner.create({ data: createData });
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
