@@ -41,12 +41,16 @@ export class UpdateProfileDto {
   profileData?: Record<string, unknown>;
 
   /**
-   * Optional profile/reference picture as a resized data URL (base64). Empty
-   * string clears it. Capped to keep DB rows small (client resizes to ~256px).
+   * Optional profile/reference picture as a resized image data URL (base64).
+   * Empty string clears it. Only JPEG/PNG/WEBP accepted; capped to keep DB rows
+   * small (client resizes to ~256px).
    */
   @IsOptional()
   @IsString()
   @MaxLength(700_000)
+  @Matches(/^$|^data:image\/(jpeg|png|webp);base64,/, {
+    message: 'avatar must be a JPEG, PNG or WEBP data URL',
+  })
   avatar?: string;
 }
 

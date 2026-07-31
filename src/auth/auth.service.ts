@@ -375,6 +375,10 @@ export class AuthService {
       data.phone = phone;
     }
     if (dto.profileData !== undefined) {
+      // Bound the JSON size to keep rows small (anti-abuse / storage bloat).
+      if (JSON.stringify(dto.profileData).length > 200_000) {
+        throw new BadRequestException('profileData is too large');
+      }
       data.profileData = dto.profileData as Prisma.InputJsonValue;
     }
     if (dto.avatar !== undefined) {
