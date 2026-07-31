@@ -1,5 +1,6 @@
 import {
   IsEmail,
+  IsIn,
   IsObject,
   IsOptional,
   IsString,
@@ -34,10 +35,29 @@ export class UpdateProfileDto {
   @MaxLength(32)
   phone?: string;
 
-  /** The onboarding answers (survey + AI) — free-form, stored opaquely. */
+  /** The onboarding answers (survey + AI + work locations) — stored opaquely. */
   @IsOptional()
   @IsObject()
   profileData?: Record<string, unknown>;
+
+  /**
+   * Optional profile/reference picture as a resized data URL (base64). Empty
+   * string clears it. Capped to keep DB rows small (client resizes to ~256px).
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(700_000)
+  avatar?: string;
+}
+
+/** POST /auth/me/verify-contact — confirm email/phone with an OTP code. */
+export class VerifyContactDto {
+  @IsIn(['email', 'sms'])
+  channel!: 'email' | 'sms';
+
+  @IsString()
+  @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
+  code!: string;
 }
 
 /** POST /auth/password/change — requires the current password. */

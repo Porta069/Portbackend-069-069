@@ -209,10 +209,16 @@ model User {
   companyName  String?
   // Optional referral: the name/code the applicant entered ("Empfohlen von").
   referredBy   String?
-  // All onboarding answers (survey step 1 + AI profile step 4), copied from the
-  // registration draft on completion so everything the user filled in is
-  // queryable per-user later. Shape is opaque (mirrors the wizard payloads).
+  // All onboarding answers (survey step 1 + AI profile step 4 + work locations),
+  // copied from the registration draft on completion so everything the user
+  // filled in is queryable per-user later. Shape is opaque.
   profileData  Json?
+  // Contact-verification status. Set true after a successful OTP check.
+  emailVerified Boolean  @default(false)
+  phoneVerified Boolean  @default(false)
+  // Optional profile / reference picture, stored as a small resized data URL
+  // (base64). Kept in the DB to avoid an object-storage dependency for avatars.
+  avatar       String?   @db.Text
   status       UserStatus @default(ACTIVE)
   // Stateless-JWT revocation counter. A JWT is only accepted while its `ver`
   // claim matches this value.

@@ -38,6 +38,7 @@ import { JwtPayload, signJwt, verifyJwt } from './jwt';
 import { PLACEHOLDER_STEPS, TOTAL_STEPS } from './registration-steps';
 import { CompleteRegistrationDto } from './dto/complete-registration.dto';
 import { UpdateProfileDto } from './dto/account.dto';
+import { OtpService } from '../otp/otp.service';
 
 export interface PublicUser {
   id: string;
@@ -47,6 +48,9 @@ export interface PublicUser {
   phone: string;
   role: User['role'];
   companyName: string | null;
+  emailVerified: boolean;
+  phoneVerified: boolean;
+  avatar: string | null;
   status: User['status'];
   createdAt: string;
   lastLoginAt: string | null;
@@ -80,6 +84,7 @@ export class AuthService {
     config: ConfigService,
     private readonly audit: AuditService,
     private readonly email: EmailService,
+    private readonly otp: OtpService,
   ) {
     this.cfg = config.get<AuthConfig>('auth')!;
   }
@@ -372,6 +377,10 @@ export class AuthService {
     if (dto.profileData !== undefined) {
       data.profileData = dto.profileData as Prisma.InputJsonValue;
     }
+    if (dto.avatar !== undefined) {
+      // Empty string clears the avatar; otherwise store the (resized) data URL.
+      data.avatar = dto.avatar ? dto.avatar : null;
+    }
     const updated = await this.prisma.user.update({
       where: { id: user.id },
       data,
@@ -384,6 +393,42 @@ export class AuthService {
       ip,
     });
     return this.toPublic(updated);
+  }
+
+  /** Marks the current user's email or phone as verified (after OTP success). */
+  async setContactVerified(
+    payload: JwtPayload,
+    channel: 'email' | 'sms',
+  ): Promise<PublicUser> {
+    const user = await this.getActiveUser(payload);
+    const updated = await this.prisma.user.update({
+      where: { id: user.id },
+      data:
+        channel === 'email'
+          ? { emailVerified: true }
+          : { phoneVerified: true },
+    });
+    await this.audit.record({
+      action: channel === 'email' ? 'user.email_verified' : 'user.phone_verified',
+      entityType: 'User',
+      entityId: user.id,
+      actorId: user.id,
+    });
+    return this.toPublic(updated);
+  }
+
+  /** Verifies the current user's email/phone with an OTP code + sets the flag. */
+  async verifyContact(
+    payload: JwtPayload,
+    channel: 'email' | 'sms',
+    code: string,
+    ip?: string,
+  ): Promise<PublicUser> {
+    const user = await this.getActiveUser(payload);
+    const contact = channel === 'email' ? user.email : user.phone;
+    // Throws BadRequestException if the code is invalid/expired.
+    await this.otp.verify(channel, contact, code, ip);
+    return this.setContactVerified(payload, channel);
   }
 
   /** Changes the password (requires the current one) and re-issues the session. */
@@ -645,6 +690,9 @@ export class AuthService {
       phone: user.phone,
       role: user.role,
       companyName: user.companyName ?? null,
+      emailVerified: user.emailVerified,
+      phoneVerified: user.phoneVerified,
+      avatar: user.avatar ?? null,
       status: user.status,
       createdAt: user.createdAt.toISOString(),
       lastLoginAt: user.lastLoginAt ? user.lastLoginAt.toISOString() : null,

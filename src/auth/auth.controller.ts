@@ -26,6 +26,7 @@ import {
   ChangePasswordDto,
   ChangeEmailDto,
   DeleteAccountDto,
+  VerifyContactDto,
 } from './dto/account.dto';
 
 @Controller('auth')
@@ -107,6 +108,19 @@ export class AuthController {
     @ClientIp() ip: string,
   ) {
     return this.auth.updateProfile(user, dto, ip);
+  }
+
+  /** Confirm the logged-in user's email/phone with an OTP code → sets the flag. */
+  @Post('me/verify-contact')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  verifyContact(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: VerifyContactDto,
+    @ClientIp() ip: string,
+  ) {
+    return this.auth.verifyContact(user, dto.channel, dto.code, ip);
   }
 
   /** GDPR data export. */
