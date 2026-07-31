@@ -362,7 +362,13 @@ export class PartnerService {
       where: { status: { in: ['PLACED', 'PAID'] } },
       _count: { _all: true },
     });
-    grouped.sort((a, b) => b._count._all - a._count._all);
+    // Sort by placements desc, with a stable tiebreaker so ranks don't flip
+    // between requests when partners are tied.
+    grouped.sort(
+      (a, b) =>
+        b._count._all - a._count._all ||
+        a.partnerId.localeCompare(b.partnerId),
+    );
     const ids = grouped.map((g) => g.partnerId);
     const partners = ids.length
       ? await this.prisma.partner.findMany({
@@ -393,13 +399,27 @@ export class PartnerService {
    */
   async linkReferral(
     referredBy: string,
-    user: { id: string; firstName: string; lastName: string; trade?: string | null },
+    user: {
+      id: string;
+      firstName: string;
+      lastName: string;
+      phone?: string | null;
+      email?: string | null;
+      trade?: string | null;
+    },
   ): Promise<void> {
     try {
       const slug = this.normalizeSlug(referredBy);
       if (slug.length < 3) return;
       const partner = await this.prisma.partner.findUnique({ where: { slug } });
       if (!partner) return;
+      // No self-referral: a partner signing up through their own link earns nothing.
+      const sameContact =
+        (user.phone && user.phone === partner.phone) ||
+        (user.email &&
+          partner.email &&
+          user.email.toLowerCase() === partner.email.toLowerCase());
+      if (sameContact) return;
       const lastInitial = user.lastName?.trim()?.[0];
       const candidateName = `${user.firstName.trim()}${
         lastInitial ? ` ${lastInitial}.` : ''
@@ -464,6 +484,13 @@ export class PartnerService {
   ): Promise<{ id: string; status: ReferralStatus; rewardCents: number }> {
     const ref = await this.prisma.referral.findUnique({ where: { id } });
     if (!ref) throw new NotFoundException('Referral not found');
+
+    // Never destroy the record of a reward that was already paid out.
+    if (ref.paidAt && status !== 'PAID') {
+      throw new ConflictException(
+        'A paid-out referral cannot be reverted',
+      );
+    }
 
     const data: Prisma.ReferralUpdateInput = { status };
     if (status === 'PLACED') {

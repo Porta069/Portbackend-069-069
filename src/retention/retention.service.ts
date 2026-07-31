@@ -112,4 +112,16 @@ export class RetentionService {
       this.logger.log(`Pruned ${result.count} audit event(s) older than ${days}d`);
     }
   }
+
+  /** Prune referral-link click logs older than 90 days (analytics only). */
+  @Cron(CronExpression.EVERY_DAY_AT_4AM)
+  async pruneReferralClicks(): Promise<void> {
+    const cutoff = new Date(Date.now() - 90 * 86_400_000);
+    const result = await this.prisma.referralClick.deleteMany({
+      where: { createdAt: { lt: cutoff } },
+    });
+    if (result.count > 0) {
+      this.logger.debug(`Pruned ${result.count} referral click(s) older than 90d`);
+    }
+  }
 }

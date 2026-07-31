@@ -56,7 +56,7 @@ async function bootstrap(): Promise<void> {
   // server-to-server and the key must never live in browser JavaScript.
   app.enableCors({
     origin: appCfg.corsOrigins,
-    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: false,
     maxAge: 600,
