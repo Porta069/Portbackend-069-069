@@ -24,6 +24,12 @@ async function bootstrap(): Promise<void> {
   app.set('trust proxy', appCfg.trustProxyHops);
   app.disable('x-powered-by');
 
+  // JSON bodies must fit a base64 avatar data URL (Express default is only 100KB).
+  // 1 MB is ample for avatars (~700KB max) + normal payloads; multipart uploads
+  // are bounded separately by multer (MAX_UPLOAD_BYTES).
+  app.useBodyParser('json', { limit: '1mb' });
+  app.useBodyParser('urlencoded', { extended: true, limit: '1mb' });
+
   // Security headers.
   app.use(
     helmet({
