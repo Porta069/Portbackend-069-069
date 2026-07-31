@@ -18,6 +18,7 @@ import { CompleteRegistrationDto } from './dto/complete-registration.dto';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { CheckEmailDto } from './dto/check-email.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -50,6 +51,14 @@ export class AuthController {
     @ClientIp() ip: string,
   ) {
     return this.auth.completeRegistration(dto, ip);
+  }
+
+  /** Live email-deliverability check for the signup form (syntax + MX). */
+  @Post('email/check')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  checkEmail(@Body() dto: CheckEmailDto) {
+    return this.auth.checkEmail(dto.email);
   }
 
   // ── Login / session ─────────────────────────────────────────────────────────

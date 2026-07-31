@@ -207,6 +207,12 @@ model User {
   role         UserRole   @default(APPLICANT)
   // Only set for EMPLOYER accounts.
   companyName  String?
+  // Optional referral: the name/code the applicant entered ("Empfohlen von").
+  referredBy   String?
+  // All onboarding answers (survey step 1 + AI profile step 4), copied from the
+  // registration draft on completion so everything the user filled in is
+  // queryable per-user later. Shape is opaque (mirrors the wizard payloads).
+  profileData  Json?
   status       UserStatus @default(ACTIVE)
   // Stateless-JWT revocation counter. A JWT is only accepted while its `ver`
   // claim matches this value.

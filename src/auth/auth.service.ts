@@ -13,11 +13,27 @@ import { EmailService } from '../notifications/email.service';
 import { AuthConfig } from '../config/configuration';
 import { hashPassword, verifyPassword } from '../common/crypto/password.util';
 import { randomToken, sha256 } from '../common/crypto/crypto.util';
+import { promises as dnsPromises } from 'dns';
 import {
+  isValidEmail,
   isValidPhone,
   normalizeEmail,
   normalizePhone,
 } from '../common/contact/contact.util';
+
+// A small blocklist of throwaway/disposable email domains.
+const DISPOSABLE_DOMAINS = new Set([
+  'mailinator.com',
+  'guerrillamail.com',
+  '10minutemail.com',
+  'tempmail.com',
+  'trashmail.com',
+  'yopmail.com',
+  'sharklasers.com',
+  'getnada.com',
+  'dispostable.com',
+  'temp-mail.org',
+]);
 import { JwtPayload, signJwt, verifyJwt } from './jwt';
 import { PLACEHOLDER_STEPS, TOTAL_STEPS } from './registration-steps';
 import { CompleteRegistrationDto } from './dto/complete-registration.dto';
@@ -176,6 +192,10 @@ export class AuthService {
             firstName: dto.firstName.trim(),
             lastName: dto.lastName.trim(),
             phone,
+            referredBy: dto.referredBy?.trim() || null,
+            // Persist every onboarding answer (survey step 1 + AI step 4) so the
+            // full profile is queryable per-user later.
+            profileData: (fresh.stepData ?? {}) as Prisma.InputJsonValue,
           },
         });
         await tx.registrationDraft.update({
@@ -287,6 +307,44 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired token');
     }
     return user;
+  }
+
+  // ── Email deliverability check ──────────────────────────────────────────────
+
+  /**
+   * Live check whether an email is plausibly deliverable: valid syntax, not a
+   * known disposable domain, and the domain publishes MX records (i.e. it can
+   * actually receive mail). Does NOT probe the mailbox itself (unreliable +
+   * privacy-invasive) — the real proof of ownership stays the OTP code.
+   */
+  async checkEmail(
+    emailInput: string,
+  ): Promise<{ deliverable: boolean; reason: string }> {
+    const email = normalizeEmail(emailInput);
+    if (!isValidEmail(email)) {
+      return { deliverable: false, reason: 'invalid_syntax' };
+    }
+    const domain = email.split('@')[1];
+    if (!domain) return { deliverable: false, reason: 'invalid_syntax' };
+    if (DISPOSABLE_DOMAINS.has(domain)) {
+      return { deliverable: false, reason: 'disposable' };
+    }
+    try {
+      // Bound the DNS lookup so a slow resolver can't pin the request.
+      const mx = await Promise.race([
+        dnsPromises.resolveMx(domain),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('dns_timeout')), 4000),
+        ),
+      ]);
+      if (Array.isArray(mx) && mx.length > 0) {
+        return { deliverable: true, reason: 'ok' };
+      }
+      return { deliverable: false, reason: 'no_mx' };
+    } catch {
+      // No MX (or lookup failed) — treat as not deliverable but non-fatal.
+      return { deliverable: false, reason: 'no_mx' };
+    }
   }
 
   // ── Password reset ──────────────────────────────────────────────────────────
