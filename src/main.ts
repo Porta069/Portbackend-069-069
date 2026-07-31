@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger } from 'nestjs-pino';
+import { json, urlencoded } from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
@@ -10,6 +11,9 @@ import { AppConfig } from './config/configuration';
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
+    // Disable the built-in body parser (default 100KB limit) so we can register
+    // our own with a limit large enough for base64 avatar data URLs.
+    bodyParser: false,
   });
 
   // Use pino as the app logger.
@@ -27,8 +31,8 @@ async function bootstrap(): Promise<void> {
   // JSON bodies must fit a base64 avatar data URL (Express default is only 100KB).
   // 1 MB is ample for avatars (~700KB max) + normal payloads; multipart uploads
   // are bounded separately by multer (MAX_UPLOAD_BYTES).
-  app.useBodyParser('json', { limit: '1mb' });
-  app.useBodyParser('urlencoded', { extended: true, limit: '1mb' });
+  app.use(json({ limit: '1mb' }));
+  app.use(urlencoded({ extended: true, limit: '1mb' }));
 
   // Security headers.
   app.use(
