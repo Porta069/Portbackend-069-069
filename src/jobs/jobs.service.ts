@@ -19,6 +19,7 @@ import {
   MatchingService,
   WorkerProfile,
 } from '../matching/matching.service';
+import { RoutingService } from '../matching/routing.service';
 import { travelMinutes } from '../matching/geo.util';
 import {
   ListJobsQueryDto,
@@ -105,7 +106,43 @@ export class JobsService {
     private readonly prisma: PrismaService,
     private readonly auth: AuthService,
     private readonly matching: MatchingService,
+    private readonly routing: RoutingService,
   ) {}
+
+  /**
+   * Replaces the air-line travel estimate with real OSRM driving minutes
+   * (one table request for the whole list). On routing failure the estimate
+   * simply stays — the listing never depends on the routing server.
+   */
+  private async withTravel(jobs: JobDto[]): Promise<JobDto[]> {
+    const routable = jobs.filter(
+      (j) =>
+        j.startLat != null && j.startLng != null && j.lat != null && j.lng != null,
+    );
+    if (routable.length === 0) return jobs;
+
+    const minutes = await this.routing.drivingMinutes(
+      routable.map((j) => ({
+        from: { lat: j.startLat as number, lng: j.startLng as number },
+        to: { lat: j.lat as number, lng: j.lng as number },
+      })),
+    );
+    routable.forEach((j, i) => {
+      const m = minutes[i];
+      if (m == null) return;
+      j.travelMinutes = m;
+      // Den Fahrzeit-Grund in "Passt, weil" konsistent halten.
+      const idx = j.matchReasons.findIndex((r) => /^\d+ Min\. von/.test(r));
+      if (m <= 30 && j.startLabel) {
+        const reason = `${m} Min. von „${j.startLabel}“`;
+        if (idx >= 0) j.matchReasons[idx] = reason;
+        else j.matchReasons.push(reason);
+      } else if (idx >= 0) {
+        j.matchReasons.splice(idx, 1);
+      }
+    });
+    return jobs;
+  }
 
   // ── Catalog ───────────────────────────────────────────────────────────────
 
@@ -211,7 +248,11 @@ export class JobsService {
       .filter(Boolean);
     const needle = (q.query ?? '').trim().toLowerCase();
 
-    let jobs = postings.map((p) => this.buildJobDto(p, profile, favorites));
+    // Echte Fahrminuten (OSRM) VOR Filterung und Sortierung — beide hängen
+    // an travelMinutes.
+    let jobs = await this.withTravel(
+      postings.map((p) => this.buildJobDto(p, profile, favorites)),
+    );
 
     jobs = jobs.filter((j) => {
       if (
@@ -261,11 +302,13 @@ export class JobsService {
       include: this.postingInclude(),
     })) as PostingWithRelations | null;
     if (!posting) throw new NotFoundException('Job not found');
-    return this.buildJobDto(
+    const dto = this.buildJobDto(
       posting,
       this.matching.extractProfile(user),
       await this.favoriteIds(user.id),
     );
+    await this.withTravel([dto]);
+    return dto;
   }
 
   // ── Favorites (Merkliste) ─────────────────────────────────────────────────
@@ -279,8 +322,10 @@ export class JobsService {
       orderBy: { createdAt: 'desc' },
     });
     const ids = new Set(favorites.map((f) => f.jobPostingId));
-    return favorites.map((f) =>
-      this.buildJobDto(f.jobPosting as PostingWithRelations, profile, ids),
+    return this.withTravel(
+      favorites.map((f) =>
+        this.buildJobDto(f.jobPosting as PostingWithRelations, profile, ids),
+      ),
     );
   }
 
@@ -339,12 +384,14 @@ export class JobsService {
       include: { jobPosting: { include: this.postingInclude() } },
       orderBy: { updatedAt: 'desc' },
     });
-    return apps.map((a) => ({
+    const out = apps.map((a) => ({
       id: a.id,
       status: APPLICATION_STATUS_DE[a.status],
       updatedAt: a.updatedAt.toISOString(),
       job: this.buildJobDto(a.jobPosting as PostingWithRelations, profile),
     }));
+    await this.withTravel(out.map((o) => o.job));
+    return out;
   }
 
   // ── Offers ────────────────────────────────────────────────────────────────
@@ -357,7 +404,7 @@ export class JobsService {
       include: { jobPosting: { include: this.postingInclude() } },
       orderBy: { createdAt: 'desc' },
     });
-    return offers.map((o) => ({
+    const out = offers.map((o) => ({
       id: o.id,
       message: o.message,
       contactPerson:
@@ -366,6 +413,8 @@ export class JobsService {
       status: OFFER_STATUS_DE[o.status],
       job: this.buildJobDto(o.jobPosting as PostingWithRelations, profile),
     }));
+    await this.withTravel(out.map((o) => o.job));
+    return out;
   }
 
   async respondOffer(payload: JwtPayload, id: string, dto: RespondOfferDto) {
