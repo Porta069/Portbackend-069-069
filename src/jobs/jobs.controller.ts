@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -58,6 +59,28 @@ export class JobsController {
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   apply(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
     return this.jobs.apply(user, id);
+  }
+
+  // ── Merkliste ─────────────────────────────────────────────────────────────
+
+  @Get('me/favorites')
+  @UseGuards(JwtAuthGuard)
+  favorites(@CurrentUser() user: JwtPayload) {
+    return this.jobs.listFavorites(user);
+  }
+
+  @Post('jobs/:id/favorite')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  addFavorite(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.jobs.addFavorite(user, id);
+  }
+
+  @Delete('jobs/:id/favorite')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  removeFavorite(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.jobs.removeFavorite(user, id);
   }
 
   // ── Me ────────────────────────────────────────────────────────────────────

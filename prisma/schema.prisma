@@ -234,6 +234,7 @@ model User {
   jobApplications JobApplication[]
   jobOffers       JobOffer[]
   contactRequests ContactRequest[]
+  favorites       Favorite[]
 }
 
 enum UserStatus {
@@ -353,6 +354,7 @@ model JobPosting {
   criteria     JobCriterion[]
   offers       JobOffer[]
   applications JobApplication[]
+  favorites    Favorite[]
 
   @@index([companyId])
   @@index([status, gewerk])
@@ -429,6 +431,19 @@ enum JobOfferStatus {
   NEW
   ACCEPTED
   DECLINED
+}
+
+// ── Favorites (worker bookmarks a posting) ──────────────────────────────────
+model Favorite {
+  id           String     @id @default(uuid())
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  jobPosting   JobPosting @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+  jobPostingId String
+  createdAt    DateTime   @default(now())
+
+  @@unique([userId, jobPostingId])
+  @@index([userId])
 }
 
 // ── Contact requests (employer asks a candidate to reveal contact data) ─────

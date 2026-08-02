@@ -38,6 +38,7 @@ export interface JobDto {
   title: string;
   employer: string;
   gewerk: string;
+  description: string;
   city: string;
   distanceKm: number | null;
   travelMinutes: number | null;
@@ -61,9 +62,21 @@ export interface JobDto {
   matchReasons: string[];
   matchScore: number;
   matchBreakdown: MatchBreakdown;
+  createdAt: string;
+  /** Is this posting on the caller's Merkliste? */
+  favorite: boolean;
+  // Company details for the detail view / comparison.
   companyDescription: string;
   companySlogan: string;
   benefits: string[];
+  companyLogo: string | null;
+  companyGruendungsjahr: string;
+  companyMitarbeiter: string;
+  companyWebsite: string;
+  companyOrt: string;
+  companyStrasse: string;
+  companyPlz: string;
+  companyKontaktName: string;
 }
 
 const APPLICATION_STATUS_DE: Record<JobApplicationStatus, string> = {
@@ -105,6 +118,7 @@ export class JobsService {
   private buildJobDto(
     posting: PostingWithRelations,
     profile: WorkerProfile,
+    favoriteIds?: Set<string>,
   ): JobDto {
     const breakdown = this.matching.score(posting.criteria, profile);
     const near = this.matching.nearestLocation(profile, posting.lat, posting.lng);
@@ -125,6 +139,7 @@ export class JobsService {
       title: posting.title,
       employer: posting.company.name,
       gewerk: posting.gewerk,
+      description: posting.description,
       city: posting.city || posting.company.ort,
       distanceKm,
       travelMinutes: minutes,
@@ -148,10 +163,29 @@ export class JobsService {
       matchReasons: reasons,
       matchScore: breakdown.score,
       matchBreakdown: breakdown,
+      createdAt: posting.createdAt.toISOString(),
+      favorite: favoriteIds?.has(posting.id) ?? false,
       companyDescription: posting.company.description,
       companySlogan: posting.company.slogan,
       benefits: posting.company.benefits,
+      companyLogo: posting.company.logo,
+      companyGruendungsjahr: posting.company.gruendungsjahr,
+      companyMitarbeiter: posting.company.mitarbeiter,
+      companyWebsite: posting.company.website,
+      companyOrt: posting.company.ort,
+      companyStrasse: posting.company.strasse,
+      companyPlz: posting.company.plz,
+      companyKontaktName: posting.company.kontaktName,
     };
+  }
+
+  /** Posting-IDs auf der Merkliste des Nutzers. */
+  private async favoriteIds(userId: string): Promise<Set<string>> {
+    const rows = await this.prisma.favorite.findMany({
+      where: { userId },
+      select: { jobPostingId: true },
+    });
+    return new Set(rows.map((r) => r.jobPostingId));
   }
 
   private postingInclude() {
@@ -162,11 +196,14 @@ export class JobsService {
     const user = await this.auth.getActiveUser(payload);
     const profile = this.matching.extractProfile(user);
 
-    const postings = (await this.prisma.jobPosting.findMany({
-      where: { status: 'ACTIVE' },
-      include: this.postingInclude(),
-      orderBy: { createdAt: 'desc' },
-    })) as PostingWithRelations[];
+    const [postings, favorites] = await Promise.all([
+      this.prisma.jobPosting.findMany({
+        where: { status: 'ACTIVE' },
+        include: this.postingInclude(),
+        orderBy: { createdAt: 'desc' },
+      }) as Promise<PostingWithRelations[]>,
+      this.favoriteIds(user.id),
+    ]);
 
     const gewerke = (q.gewerke ?? '')
       .split(',')
@@ -174,7 +211,7 @@ export class JobsService {
       .filter(Boolean);
     const needle = (q.query ?? '').trim().toLowerCase();
 
-    let jobs = postings.map((p) => this.buildJobDto(p, profile));
+    let jobs = postings.map((p) => this.buildJobDto(p, profile, favorites));
 
     jobs = jobs.filter((j) => {
       if (
@@ -208,7 +245,8 @@ export class JobsService {
     jobs.sort((a, b) => {
       if (q.sort === 'fahrzeit') return byTravel(a, b);
       if (q.sort === 'gehalt') return (b.salaryMax ?? 0) - (a.salaryMax ?? 0);
-      // Relevanz: score first, then travel time.
+      if (q.sort === 'neueste') return b.createdAt.localeCompare(a.createdAt);
+      // Relevanz (Standard): bester Match zuerst, dann kurze Fahrzeit.
       if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
       return byTravel(a, b);
     });
@@ -223,7 +261,49 @@ export class JobsService {
       include: this.postingInclude(),
     })) as PostingWithRelations | null;
     if (!posting) throw new NotFoundException('Job not found');
-    return this.buildJobDto(posting, this.matching.extractProfile(user));
+    return this.buildJobDto(
+      posting,
+      this.matching.extractProfile(user),
+      await this.favoriteIds(user.id),
+    );
+  }
+
+  // ── Favorites (Merkliste) ─────────────────────────────────────────────────
+
+  async listFavorites(payload: JwtPayload): Promise<JobDto[]> {
+    const user = await this.auth.getActiveUser(payload);
+    const profile = this.matching.extractProfile(user);
+    const favorites = await this.prisma.favorite.findMany({
+      where: { userId: user.id, jobPosting: { status: { not: 'ARCHIVED' } } },
+      include: { jobPosting: { include: this.postingInclude() } },
+      orderBy: { createdAt: 'desc' },
+    });
+    const ids = new Set(favorites.map((f) => f.jobPostingId));
+    return favorites.map((f) =>
+      this.buildJobDto(f.jobPosting as PostingWithRelations, profile, ids),
+    );
+  }
+
+  async addFavorite(payload: JwtPayload, jobId: string) {
+    const user = await this.auth.getActiveUser(payload);
+    const posting = await this.prisma.jobPosting.findFirst({
+      where: { id: jobId, status: { not: 'ARCHIVED' } },
+    });
+    if (!posting) throw new NotFoundException('Job not found');
+    await this.prisma.favorite.upsert({
+      where: { userId_jobPostingId: { userId: user.id, jobPostingId: jobId } },
+      create: { userId: user.id, jobPostingId: jobId },
+      update: {},
+    });
+    return { favorite: true };
+  }
+
+  async removeFavorite(payload: JwtPayload, jobId: string) {
+    const user = await this.auth.getActiveUser(payload);
+    await this.prisma.favorite.deleteMany({
+      where: { userId: user.id, jobPostingId: jobId },
+    });
+    return { favorite: false };
   }
 
   // ── Applications ──────────────────────────────────────────────────────────

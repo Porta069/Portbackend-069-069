@@ -46,8 +46,8 @@ export class ListJobsQueryDto {
   fahrzeitIstArbeitszeit?: string;
 
   @IsOptional()
-  @IsIn(['relevanz', 'fahrzeit', 'gehalt'])
-  sort?: 'relevanz' | 'fahrzeit' | 'gehalt';
+  @IsIn(['relevanz', 'fahrzeit', 'gehalt', 'neueste'])
+  sort?: 'relevanz' | 'fahrzeit' | 'gehalt' | 'neueste';
 }
 
 /** POST /me/offers/:id/respond */
