@@ -88,9 +88,13 @@ export const envSchema = z
     S3_BUCKET: z.string().min(1),
     S3_ACCESS_KEY_ID: z.string().min(1),
     S3_SECRET_ACCESS_KEY: z.string().min(1),
+    // Supabase Storage session-token auth (JWT); leer bei klassischen S3-Keys.
+    S3_SESSION_TOKEN: z.string().optional(),
     S3_FORCE_PATH_STYLE: strictBool('false'),
+    // 'none' für Anbieter, die den SSE-Header nicht akzeptieren (z. B.
+    // Supabase Storage — dort ist Verschlüsselung at rest ohnehin Standard).
     S3_SERVER_SIDE_ENCRYPTION: z
-      .enum(['AES256', 'aws:kms'])
+      .enum(['AES256', 'aws:kms', 'none'])
       .default('AES256'),
     S3_KMS_KEY_ID: z.string().optional(),
 

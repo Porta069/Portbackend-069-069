@@ -50,6 +50,21 @@ export class ListJobsQueryDto {
   sort?: 'relevanz' | 'fahrzeit' | 'gehalt' | 'neueste';
 }
 
+/** GET /jobs/:id/travel — Ausgangspunkt für die exakte Fahrzeit. */
+export class TravelQueryDto {
+  @Type(() => Number)
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  lat!: number;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  lng!: number;
+}
+
 /** POST /me/offers/:id/respond */
 export class RespondOfferDto {
   @IsIn(['angenommen', 'abgelehnt'])

@@ -15,12 +15,13 @@ import { AuthService } from '../auth/auth.service';
 import { JwtPayload } from '../auth/jwt';
 import {
   CriterionWithQuestion,
+  DeclineContext,
   MatchBreakdown,
   MatchingService,
   WorkerProfile,
 } from '../matching/matching.service';
 import { RoutingService } from '../matching/routing.service';
-import { travelMinutes } from '../matching/geo.util';
+import { haversineKm, travelMinutes } from '../matching/geo.util';
 import {
   ListJobsQueryDto,
   RespondOfferDto,
@@ -110,38 +111,32 @@ export class JobsService {
   ) {}
 
   /**
-   * Replaces the air-line travel estimate with real OSRM driving minutes
-   * (one table request for the whole list). On routing failure the estimate
-   * simply stays — the listing never depends on the routing server.
+   * Exact driving time for ONE job from a chosen origin (a saved work
+   * location or the browser's current position). The listing itself shows
+   * the cheap air-line estimate; this is the on-demand precision step.
    */
-  private async withTravel(jobs: JobDto[]): Promise<JobDto[]> {
-    const routable = jobs.filter(
-      (j) =>
-        j.startLat != null && j.startLng != null && j.lat != null && j.lng != null,
-    );
-    if (routable.length === 0) return jobs;
-
-    const minutes = await this.routing.drivingMinutes(
-      routable.map((j) => ({
-        from: { lat: j.startLat as number, lng: j.startLng as number },
-        to: { lat: j.lat as number, lng: j.lng as number },
-      })),
-    );
-    routable.forEach((j, i) => {
-      const m = minutes[i];
-      if (m == null) return;
-      j.travelMinutes = m;
-      // Den Fahrzeit-Grund in "Passt, weil" konsistent halten.
-      const idx = j.matchReasons.findIndex((r) => /^\d+ Min\. von/.test(r));
-      if (m <= 30 && j.startLabel) {
-        const reason = `${m} Min. von „${j.startLabel}“`;
-        if (idx >= 0) j.matchReasons[idx] = reason;
-        else j.matchReasons.push(reason);
-      } else if (idx >= 0) {
-        j.matchReasons.splice(idx, 1);
-      }
+  async travelTime(payload: JwtPayload, jobId: string, lat: number, lng: number) {
+    await this.auth.getActiveUser(payload);
+    const posting = await this.prisma.jobPosting.findFirst({
+      where: { id: jobId, status: { not: 'DRAFT' } },
+      select: { lat: true, lng: true },
     });
-    return jobs;
+    if (!posting || posting.lat == null || posting.lng == null) {
+      throw new NotFoundException('Job not found');
+    }
+    const distanceKm =
+      Math.round(
+        haversineKm(lat, lng, posting.lat, posting.lng) * 10,
+      ) / 10;
+    const [exact] = await this.routing.drivingMinutes([
+      { from: { lat, lng }, to: { lat: posting.lat, lng: posting.lng } },
+    ]);
+    return {
+      minutes: exact ?? travelMinutes(distanceKm),
+      distanceKm,
+      // false = OSRM war nicht erreichbar, Wert ist die Schätzformel.
+      exact: exact != null,
+    };
   }
 
   // ── Catalog ───────────────────────────────────────────────────────────────
@@ -156,11 +151,24 @@ export class JobsService {
     posting: PostingWithRelations,
     profile: WorkerProfile,
     favoriteIds?: Set<string>,
+    declineCtx?: DeclineContext,
   ): JobDto {
-    const breakdown = this.matching.score(posting.criteria, profile);
+    let breakdown = this.matching.score(posting.criteria, profile);
     const near = this.matching.nearestLocation(profile, posting.lat, posting.lng);
     const distanceKm = near ? Math.round(near.distanceKm * 10) / 10 : null;
     const minutes = distanceKm != null ? travelMinutes(distanceKm) : null;
+
+    // Absage-Feedback als transparenter Punktabzug.
+    if (declineCtx) {
+      breakdown = this.matching.applyAdjustments(
+        breakdown,
+        this.matching.declineAdjustments(declineCtx, {
+          companyId: posting.companyId,
+          travelMinutes: minutes,
+          salaryMax: posting.salaryMax,
+        }),
+      );
+    }
 
     const gewerkMatch = profile.gewerke.includes(posting.gewerk);
     const reasons: string[] = [];
@@ -225,6 +233,36 @@ export class JobsService {
     return new Set(rows.map((r) => r.jobPostingId));
   }
 
+  /** Abgelehnte Angebote des Nutzers → Feedback-Kontext fürs Scoring. */
+  private async declineContext(userId: string): Promise<DeclineContext> {
+    const declined = await this.prisma.jobOffer.findMany({
+      where: { userId, status: 'DECLINED' },
+      select: {
+        declineReason: true,
+        jobPosting: { select: { companyId: true, salaryMax: true } },
+      },
+    });
+    const byCompany = new Map<string, number>();
+    let zuWeitCount = 0;
+    let gehaltCount = 0;
+    let gehaltDeclinedMax: number | null = null;
+    for (const o of declined) {
+      const c = o.jobPosting.companyId;
+      byCompany.set(c, (byCompany.get(c) ?? 0) + 1);
+      if (o.declineReason === 'zu_weit') zuWeitCount++;
+      if (o.declineReason === 'gehalt') {
+        gehaltCount++;
+        if (o.jobPosting.salaryMax != null) {
+          gehaltDeclinedMax = Math.max(
+            gehaltDeclinedMax ?? 0,
+            o.jobPosting.salaryMax,
+          );
+        }
+      }
+    }
+    return { byCompany, zuWeitCount, gehaltCount, gehaltDeclinedMax };
+  }
+
   private postingInclude() {
     return { company: true, criteria: { include: { question: true } } } as const;
   }
@@ -233,13 +271,14 @@ export class JobsService {
     const user = await this.auth.getActiveUser(payload);
     const profile = this.matching.extractProfile(user);
 
-    const [postings, favorites] = await Promise.all([
+    const [postings, favorites, declineCtx] = await Promise.all([
       this.prisma.jobPosting.findMany({
         where: { status: 'ACTIVE' },
         include: this.postingInclude(),
         orderBy: { createdAt: 'desc' },
       }) as Promise<PostingWithRelations[]>,
       this.favoriteIds(user.id),
+      this.declineContext(user.id),
     ]);
 
     const gewerke = (q.gewerke ?? '')
@@ -248,10 +287,8 @@ export class JobsService {
       .filter(Boolean);
     const needle = (q.query ?? '').trim().toLowerCase();
 
-    // Echte Fahrminuten (OSRM) VOR Filterung und Sortierung — beide hängen
-    // an travelMinutes.
-    let jobs = await this.withTravel(
-      postings.map((p) => this.buildJobDto(p, profile, favorites)),
+    let jobs = postings.map((p) =>
+      this.buildJobDto(p, profile, favorites, declineCtx),
     );
 
     jobs = jobs.filter((j) => {
@@ -302,13 +339,12 @@ export class JobsService {
       include: this.postingInclude(),
     })) as PostingWithRelations | null;
     if (!posting) throw new NotFoundException('Job not found');
-    const dto = this.buildJobDto(
+    return this.buildJobDto(
       posting,
       this.matching.extractProfile(user),
       await this.favoriteIds(user.id),
+      await this.declineContext(user.id),
     );
-    await this.withTravel([dto]);
-    return dto;
   }
 
   // ── Favorites (Merkliste) ─────────────────────────────────────────────────
@@ -322,10 +358,9 @@ export class JobsService {
       orderBy: { createdAt: 'desc' },
     });
     const ids = new Set(favorites.map((f) => f.jobPostingId));
-    return this.withTravel(
-      favorites.map((f) =>
-        this.buildJobDto(f.jobPosting as PostingWithRelations, profile, ids),
-      ),
+    const declineCtx = await this.declineContext(user.id);
+    return favorites.map((f) =>
+      this.buildJobDto(f.jobPosting as PostingWithRelations, profile, ids, declineCtx),
     );
   }
 
@@ -384,14 +419,12 @@ export class JobsService {
       include: { jobPosting: { include: this.postingInclude() } },
       orderBy: { updatedAt: 'desc' },
     });
-    const out = apps.map((a) => ({
+    return apps.map((a) => ({
       id: a.id,
       status: APPLICATION_STATUS_DE[a.status],
       updatedAt: a.updatedAt.toISOString(),
       job: this.buildJobDto(a.jobPosting as PostingWithRelations, profile),
     }));
-    await this.withTravel(out.map((o) => o.job));
-    return out;
   }
 
   // ── Offers ────────────────────────────────────────────────────────────────
@@ -404,7 +437,7 @@ export class JobsService {
       include: { jobPosting: { include: this.postingInclude() } },
       orderBy: { createdAt: 'desc' },
     });
-    const out = offers.map((o) => ({
+    return offers.map((o) => ({
       id: o.id,
       message: o.message,
       contactPerson:
@@ -413,8 +446,6 @@ export class JobsService {
       status: OFFER_STATUS_DE[o.status],
       job: this.buildJobDto(o.jobPosting as PostingWithRelations, profile),
     }));
-    await this.withTravel(out.map((o) => o.job));
-    return out;
   }
 
   async respondOffer(payload: JwtPayload, id: string, dto: RespondOfferDto) {

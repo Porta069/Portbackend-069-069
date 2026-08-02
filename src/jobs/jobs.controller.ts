@@ -21,6 +21,7 @@ import {
   RespondOfferDto,
   RespondContactRequestDto,
   SaveWorkLocationsDto,
+  TravelQueryDto,
 } from './dto/jobs.dto';
 
 /**
@@ -51,6 +52,18 @@ export class JobsController {
   @UseGuards(JwtAuthGuard)
   get(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
     return this.jobs.getJob(user, id);
+  }
+
+  /** Exakte Fahrzeit (OSRM) ab einem gewählten Ausgangspunkt. */
+  @Get('jobs/:id/travel')
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  travel(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Query() query: TravelQueryDto,
+  ) {
+    return this.jobs.travelTime(user, id, query.lat, query.lng);
   }
 
   @Post('jobs/:id/apply')

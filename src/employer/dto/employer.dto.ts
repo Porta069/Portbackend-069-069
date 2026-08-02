@@ -138,6 +138,12 @@ export class RequestContactDto {
   position!: string;
 }
 
+/** POST /employer/applications/:id/status — Status, den der Betrieb setzt. */
+export class ApplicationStatusDto {
+  @IsIn(['gesehen', 'im_gespraech', 'zusage', 'abgelehnt'])
+  status!: 'gesehen' | 'im_gespraech' | 'zusage' | 'abgelehnt';
+}
+
 /** POST /employer/candidates/:id/offer */
 export class SendOfferDto {
   @IsString()

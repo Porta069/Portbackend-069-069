@@ -44,6 +44,7 @@ export interface StorageConfig {
   bucket: string;
   accessKeyId: string;
   secretAccessKey: string;
+  sessionToken?: string;
   forcePathStyle: boolean;
   serverSideEncryption: Env['S3_SERVER_SIDE_ENCRYPTION'];
   kmsKeyId?: string;
@@ -128,6 +129,7 @@ export function buildConfig(env: Env): RootConfig {
       bucket: env.S3_BUCKET,
       accessKeyId: env.S3_ACCESS_KEY_ID,
       secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+      sessionToken: env.S3_SESSION_TOKEN,
       forcePathStyle: env.S3_FORCE_PATH_STYLE,
       serverSideEncryption: env.S3_SERVER_SIDE_ENCRYPTION,
       kmsKeyId: env.S3_KMS_KEY_ID,

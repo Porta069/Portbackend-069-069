@@ -37,6 +37,8 @@ export class StorageService {
       credentials: {
         accessKeyId: this.cfg.accessKeyId,
         secretAccessKey: this.cfg.secretAccessKey,
+        // Supabase Storage: session-token auth with a service-role JWT.
+        sessionToken: this.cfg.sessionToken || undefined,
       },
       // Bound hung connections so a slow S3 doesn't pin request handlers.
       requestHandler: { connectionTimeout: 3_000, requestTimeout: 15_000 },
@@ -63,9 +65,12 @@ export class StorageService {
         Key: storageKey,
         Body: buffer,
         ContentType: mime,
-        // Encrypt at rest.
-        ServerSideEncryption: this.cfg
-          .serverSideEncryption as ServerSideEncryption,
+        // Encrypt at rest ('none' = provider encrypts by default and
+        // rejects the SSE header, e.g. Supabase Storage).
+        ServerSideEncryption:
+          this.cfg.serverSideEncryption === 'none'
+            ? undefined
+            : (this.cfg.serverSideEncryption as ServerSideEncryption),
         SSEKMSKeyId:
           this.cfg.serverSideEncryption === 'aws:kms'
             ? this.cfg.kmsKeyId

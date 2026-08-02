@@ -8,6 +8,7 @@ import {
 import {
   Company,
   ContactRequestStatus,
+  JobApplicationStatus,
   JobStatus,
   Prisma,
   User,
@@ -62,6 +63,21 @@ const CONTACT_STATUS_DE: Record<ContactRequestStatus, string> = {
   REQUESTED: 'angefragt',
   APPROVED: 'freigegeben',
   DECLINED: 'abgelehnt',
+};
+
+const APPLICATION_STATUS_DE: Record<JobApplicationStatus, string> = {
+  SENT: 'gesendet',
+  SEEN: 'gesehen',
+  INTERVIEW: 'im_gespraech',
+  REJECTED: 'abgelehnt',
+  ACCEPTED: 'zusage',
+};
+
+const APPLICATION_STATUS_FROM_DE: Record<string, JobApplicationStatus> = {
+  gesehen: 'SEEN',
+  im_gespraech: 'INTERVIEW',
+  abgelehnt: 'REJECTED',
+  zusage: 'ACCEPTED',
 };
 
 export interface CandidateDto {
@@ -633,6 +649,78 @@ export class EmployerService {
       }
       throw e;
     }
+  }
+
+  // ── Applications (Bewerbungen auf die eigenen Inserate) ──────────────────
+
+  /**
+   * Alle Bewerbungen auf Inserate des Betriebs — mit anonymisiertem
+   * Kandidatenprofil, Score gegen das jeweilige Inserat und (nur nach
+   * Freigabe) den Kontaktdaten.
+   */
+  async listApplications(payload: JwtPayload) {
+    const { company } = await this.requireEmployer(payload);
+    const [apps, requests] = await Promise.all([
+      this.prisma.jobApplication.findMany({
+        where: { jobPosting: { companyId: company.id } },
+        include: {
+          user: true,
+          jobPosting: { include: this.jobInclude() },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.contactRequest.findMany({ where: { companyId: company.id } }),
+    ]);
+    const requestByUser = new Map(requests.map((r) => [r.userId, r]));
+
+    return apps.map((a) => {
+      const profile = this.matching.extractProfile(a.user);
+      const near = this.matching.nearestLocation(
+        profile,
+        company.lat,
+        company.lng,
+      );
+      const breakdown =
+        a.jobPosting.criteria.length > 0
+          ? this.matching.score(a.jobPosting.criteria, profile)
+          : null;
+      const request = requestByUser.get(a.userId);
+      return {
+        id: a.id,
+        status: APPLICATION_STATUS_DE[a.status],
+        createdAt: a.createdAt.toISOString(),
+        updatedAt: a.updatedAt.toISOString(),
+        jobPosting: {
+          id: a.jobPosting.id,
+          title: a.jobPosting.title,
+          gewerk: a.jobPosting.gewerk,
+        },
+        candidate: this.toCandidateDto(a.user, profile, {
+          distanceKm: near?.distanceKm ?? null,
+          location: near?.location ?? null,
+          matchScore: breakdown?.score ?? 0,
+          matchBreakdown: breakdown,
+          status: request ? CONTACT_STATUS_DE[request.status] : 'verfuegbar',
+          approved: request?.status === 'APPROVED',
+        }),
+      };
+    });
+  }
+
+  /** Setzt den Bewerbungsstatus — der Handwerker sieht ihn sofort. */
+  async setApplicationStatus(payload: JwtPayload, id: string, statusDe: string) {
+    const { company } = await this.requireEmployer(payload);
+    const app = await this.prisma.jobApplication.findFirst({
+      where: { id, jobPosting: { companyId: company.id } },
+    });
+    if (!app) throw new NotFoundException('Application not found');
+    const status = APPLICATION_STATUS_FROM_DE[statusDe];
+    if (!status) throw new BadRequestException('Unknown status');
+    const updated = await this.prisma.jobApplication.update({
+      where: { id: app.id },
+      data: { status },
+    });
+    return { id: updated.id, status: APPLICATION_STATUS_DE[updated.status] };
   }
 
   // ── Admin: managed company intake (foundation for the AI pipeline) ───────

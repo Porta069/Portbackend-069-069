@@ -20,6 +20,7 @@ import { AdminApiKeyGuard } from '../common/guards/admin-api-key.guard';
 import { EmployerService } from './employer.service';
 import {
   AdminCreateCompanyDto,
+  ApplicationStatusDto,
   CandidateQueryDto,
   RequestContactDto,
   SaveJobDto,
@@ -123,6 +124,25 @@ export class EmployerController {
   @UseGuards(JwtAuthGuard)
   requests(@CurrentUser() user: JwtPayload) {
     return this.employer.listRequests(user);
+  }
+
+  // ── Bewerbungen auf eigene Inserate ─────────────────────────────────────
+
+  @Get('applications')
+  @UseGuards(JwtAuthGuard)
+  applications(@CurrentUser() user: JwtPayload) {
+    return this.employer.listApplications(user);
+  }
+
+  @Post('applications/:id/status')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  setApplicationStatus(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: ApplicationStatusDto,
+  ) {
+    return this.employer.setApplicationStatus(user, id, dto.status);
   }
 
   // ── Admin (server-to-server, x-admin-api-key) ───────────────────────────

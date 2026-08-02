@@ -58,15 +58,42 @@ export interface CriterionBreakdown {
   skipped: boolean;
 }
 
+export interface ScoreAdjustment {
+  id: string;
+  /** Sichtbare Begründung in der Transparenz-Ansicht. */
+  label: string;
+  /** Abzug in Score-Punkten (positiv). */
+  points: number;
+}
+
 export interface MatchBreakdown {
   criteria: CriterionBreakdown[];
   totalPenalty: number;
   totalMaxPenalty: number;
-  /** 0–100 */
+  /** Score aus den Kriterien allein (vor Abzügen). */
+  baseScore: number;
+  /** Abzüge aus dem Nutzerverhalten (abgelehnte Angebote). */
+  adjustments: ScoreAdjustment[];
+  /** Endscore 0–100 = baseScore − Σ adjustments (nie unter 0). */
   score: number;
   formula: string;
   /** Reserved: score of the AI question round (not yet integrated). */
   aiScore: number | null;
+}
+
+/**
+ * Feedback aus abgelehnten Angeboten. Wird pro Nutzer einmal aufgebaut und
+ * fließt als transparenter Punktabzug in jeden Job-Score ein.
+ */
+export interface DeclineContext {
+  /** companyId → Anzahl abgelehnter Angebote dieses Betriebs. */
+  byCompany: Map<string, number>;
+  /** Wie oft insgesamt mit Grund „zu weit weg“ abgelehnt wurde. */
+  zuWeitCount: number;
+  /** Wie oft insgesamt mit Grund „Gehalt passt nicht“ abgelehnt wurde. */
+  gehaltCount: number;
+  /** Höchstes salaryMax unter den wegen Gehalt abgelehnten Stellen. */
+  gehaltDeclinedMax: number | null;
 }
 
 export type CriterionWithQuestion = JobCriterion & { question: MatchQuestion };
@@ -237,9 +264,81 @@ export class MatchingService {
       criteria: rows,
       totalPenalty,
       totalMaxPenalty,
+      baseScore: score,
+      adjustments: [],
       score,
       formula: FORMULA,
       aiScore: null,
+    };
+  }
+
+  // ── Absage-Feedback ───────────────────────────────────────────────────────
+
+  /**
+   * Abzüge aus abgelehnten Angeboten — bewusst wenige, einfache Regeln:
+   *  1. Je abgelehntem Angebot desselben Betriebs −8 Punkte (max. −20).
+   *  2. Ab zwei Absagen „zu weit weg“: Stellen über 45 Fahrminuten −10.
+   *  3. Ab zwei Absagen „Gehalt passt nicht“: Stellen, deren Maximalgehalt
+   *     nicht über dem bereits abgelehnten Niveau liegt, −10.
+   */
+  declineAdjustments(
+    ctx: DeclineContext,
+    job: {
+      companyId: string;
+      travelMinutes: number | null;
+      salaryMax: number | null;
+    },
+  ): ScoreAdjustment[] {
+    const out: ScoreAdjustment[] = [];
+
+    const declined = ctx.byCompany.get(job.companyId) ?? 0;
+    if (declined > 0) {
+      out.push({
+        id: 'declined_company',
+        label: `Du hast ${declined === 1 ? 'ein Angebot' : `${declined} Angebote`} dieses Betriebs abgelehnt`,
+        points: Math.min(20, declined * 8),
+      });
+    }
+
+    if (
+      ctx.zuWeitCount >= 2 &&
+      job.travelMinutes != null &&
+      job.travelMinutes > 45
+    ) {
+      out.push({
+        id: 'declined_zu_weit',
+        label: 'Mehrfach „zu weit weg“ abgelehnt — Stellen über 45 Min. abgewertet',
+        points: 10,
+      });
+    }
+
+    if (
+      ctx.gehaltCount >= 2 &&
+      ctx.gehaltDeclinedMax != null &&
+      job.salaryMax != null &&
+      job.salaryMax <= ctx.gehaltDeclinedMax
+    ) {
+      out.push({
+        id: 'declined_gehalt',
+        label: `Gehalt mehrfach als zu niedrig abgelehnt — Stellen bis ${ctx.gehaltDeclinedMax.toLocaleString('de-DE')} € abgewertet`,
+        points: 10,
+      });
+    }
+
+    return out;
+  }
+
+  /** Verrechnet die Abzüge in den Breakdown (Endscore nie unter 0). */
+  applyAdjustments(
+    breakdown: MatchBreakdown,
+    adjustments: ScoreAdjustment[],
+  ): MatchBreakdown {
+    if (adjustments.length === 0) return breakdown;
+    const total = adjustments.reduce((s, a) => s + a.points, 0);
+    return {
+      ...breakdown,
+      adjustments,
+      score: Math.max(0, breakdown.baseScore - total),
     };
   }
 
