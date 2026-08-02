@@ -18,7 +18,14 @@ export class HealthController {
   @HealthCheck()
   check() {
     return this.health.check([
-      () => this.prismaIndicator.pingCheck('database', this.prisma),
+      // 5s statt der Voreinstellung (1s): unter Lastspitzen wartet ein Ping
+      // kurz auf eine freie Verbindung. Mit 1s meldete der Check "down",
+      // woraufhin die Plattform den laufenden Dienst neu startete — die
+      // Störung entstand also erst durch die Prüfung selbst.
+      () =>
+        this.prismaIndicator.pingCheck('database', this.prisma, {
+          timeout: 5_000,
+        }),
     ]);
   }
 }
