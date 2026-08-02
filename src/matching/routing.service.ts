@@ -27,6 +27,10 @@ const keyOf = (a: LatLng, b: LatLng) =>
 export class RoutingService {
   private readonly logger = new Logger(RoutingService.name);
   private readonly cache = new Map<string, number>();
+  // Beobachtung des öffentlichen OSRM-Demo-Servers (keine SLA): steigen die
+  // Fehler, ist das das Signal, OSRM_URL auf eine eigene Instanz umzustellen.
+  private fetches = 0;
+  private failures = 0;
 
   /**
    * Driving minutes for each (from → to) pair, or null where unavailable.
@@ -71,6 +75,12 @@ export class RoutingService {
       `?sources=${srcIdx}&destinations=${dstIdx}&annotations=duration`;
 
     try {
+      this.fetches++;
+      if (this.fetches % 25 === 0) {
+        this.logger.log(
+          `OSRM usage: ${this.fetches} fetches, ${this.failures} failures, cache ${this.cache.size}`,
+        );
+      }
       const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (!res.ok) throw new Error(`OSRM ${res.status}`);
       const json = (await res.json()) as {
@@ -92,7 +102,10 @@ export class RoutingService {
       });
     } catch (e) {
       // Fallback path: callers keep the air-line estimate.
-      this.logger.warn(`OSRM unavailable, using estimate (${String(e)})`);
+      this.failures++;
+      this.logger.warn(
+        `OSRM unavailable (${this.failures}/${this.fetches} failed), using estimate (${String(e)})`,
+      );
     }
   }
 }

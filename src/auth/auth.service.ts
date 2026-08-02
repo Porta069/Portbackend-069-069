@@ -548,6 +548,40 @@ export class AuthService {
   /** GDPR data export — everything we hold about the user (no secrets). */
   async exportData(payload: JwtPayload): Promise<Record<string, unknown>> {
     const user = await this.getActiveUser(payload);
+
+    // Matching-Bereich: Merkliste, Bewerbungen, Angebote, Kontaktfreigaben.
+    const [favorites, applications, offers, contactRequests] =
+      await Promise.all([
+        this.prisma.favorite.findMany({
+          where: { userId: user.id },
+          include: { jobPosting: { select: { title: true, gewerk: true } } },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.jobApplication.findMany({
+          where: { userId: user.id },
+          include: {
+            jobPosting: {
+              select: { title: true, gewerk: true, company: { select: { name: true } } },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.jobOffer.findMany({
+          where: { userId: user.id },
+          include: {
+            jobPosting: {
+              select: { title: true, company: { select: { name: true } } },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.contactRequest.findMany({
+          where: { userId: user.id },
+          include: { company: { select: { name: true } } },
+          orderBy: { createdAt: 'desc' },
+        }),
+      ]);
+
     return {
       exportedAt: new Date().toISOString(),
       account: {
@@ -566,6 +600,34 @@ export class AuthService {
           : null,
       },
       onboardingAnswers: user.profileData ?? null,
+      merkliste: favorites.map((f) => ({
+        stelle: f.jobPosting.title,
+        gewerk: f.jobPosting.gewerk,
+        gemerktAm: f.createdAt.toISOString(),
+      })),
+      bewerbungen: applications.map((a) => ({
+        stelle: a.jobPosting.title,
+        gewerk: a.jobPosting.gewerk,
+        betrieb: a.jobPosting.company.name,
+        status: a.status,
+        beworbenAm: a.createdAt.toISOString(),
+        aktualisiertAm: a.updatedAt.toISOString(),
+      })),
+      jobAngebote: offers.map((o) => ({
+        stelle: o.jobPosting.title,
+        betrieb: o.jobPosting.company.name,
+        nachricht: o.message,
+        status: o.status,
+        ablehnungsgrund: o.declineReason,
+        erhaltenAm: o.createdAt.toISOString(),
+      })),
+      kontaktfreigaben: contactRequests.map((r) => ({
+        betrieb: r.company.name,
+        position: r.position,
+        status: r.status,
+        angefragtAm: r.createdAt.toISOString(),
+        entschiedenAm: r.updatedAt.toISOString(),
+      })),
     };
   }
 
