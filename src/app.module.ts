@@ -1,13 +1,14 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { LoggerModule } from 'nestjs-pino';
 
 import { validateEnv } from './config/env.validation';
 import { buildConfig } from './config/configuration';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
@@ -68,9 +69,13 @@ import { HealthModule } from './health/health.module';
       },
     }),
 
-    // Global rate limiting baseline (endpoints tighten further via @Throttle).
+    // Global rate limiting baseline (endpoints tighten further via @Throttle;
+    // login, OTP, registration, uploads and account actions all set their own
+    // strict limits). The baseline only has to survive normal dashboard use:
+    // one screen easily issues a dozen reads, and a user may switch areas
+    // rapidly — 240/min per account leaves headroom without inviting scraping.
     ThrottlerModule.forRoot([
-      { name: 'default', ttl: 60_000, limit: 60 },
+      { name: 'default', ttl: 60_000, limit: 240 },
     ]),
 
     ScheduleModule.forRoot(),
@@ -88,7 +93,8 @@ import { HealthModule } from './health/health.module';
     HealthModule,
   ],
   providers: [
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // Counts per account when authenticated, per IP otherwise (CGNAT-safe).
+    { provide: APP_GUARD, useClass: UserThrottlerGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })
