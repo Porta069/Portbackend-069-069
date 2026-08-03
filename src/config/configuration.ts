@@ -8,6 +8,8 @@ export interface AppConfig {
   env: Env['NODE_ENV'];
   port: number;
   appUrl: string;
+  /** True, sobald die Instanz über HTTPS öffentlich erreichbar ist. */
+  isPubliclyServed: boolean;
   corsOrigins: string[];
   trustProxyHops: number;
   isProduction: boolean;
@@ -97,6 +99,11 @@ export function buildConfig(env: Env): RootConfig {
       env: env.NODE_ENV,
       port: env.PORT,
       appUrl: env.APP_URL,
+      // Öffentlich über HTTPS erreichbar — unabhängig von NODE_ENV. Der
+      // Betrieb läuft derzeit bewusst mit NODE_ENV=development (Konsolen-
+      // Provider für E-Mail/SMS), die Instanz steht aber im Internet. Härtung
+      // (HSTS, Log-Format) darf davon nicht abhängen.
+      isPubliclyServed: env.APP_URL.startsWith('https://'),
       corsOrigins: env.CORS_ORIGINS,
       trustProxyHops: env.TRUST_PROXY_HOPS,
       isProduction: env.NODE_ENV === 'production',

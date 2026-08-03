@@ -43,9 +43,12 @@ async function bootstrap(): Promise<void> {
           frameAncestors: ["'none'"],
         },
       },
-      hsts: appCfg.isProduction
-        ? { maxAge: 15552000, includeSubDomains: true, preload: true }
-        : false,
+      // An HTTPS gekoppelt, nicht an NODE_ENV: die öffentliche Instanz muss
+      // HSTS senden, auch solange sie im Entwicklungsmodus betrieben wird.
+      hsts:
+        appCfg.isProduction || appCfg.isPubliclyServed
+          ? { maxAge: 15552000, includeSubDomains: true, preload: true }
+          : false,
       crossOriginResourcePolicy: { policy: 'same-site' },
       referrerPolicy: { policy: 'no-referrer' },
     }),

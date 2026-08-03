@@ -35,7 +35,12 @@ import { HealthModule } from './health/health.module';
     LoggerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
-        const isProd = config.get<boolean>('app.isProduction');
+        // An der öffentlichen Erreichbarkeit ausgerichtet, nicht an NODE_ENV:
+        // die Live-Instanz soll knapp und maschinenlesbar loggen (kein
+        // pino-pretty, kein debug), auch im Entwicklungsmodus.
+        const isProd =
+          config.get<boolean>('app.isProduction') ||
+          config.get<boolean>('app.isPubliclyServed');
         return {
           pinoHttp: {
             level: isProd ? 'info' : 'debug',
