@@ -578,6 +578,18 @@ export class EmployerService {
     if (existing && existing.status !== 'DECLINED') {
       throw new ConflictException('Du hast diesen Kandidaten bereits angefragt.');
     }
+    // Ein "Nein" des Kandidaten hält. Ohne Sperre könnte ein Betrieb die
+    // Ablehnung beliebig oft überschreiben und den Kandidaten zuspammen;
+    // nach 90 Tagen ist eine erneute Anfrage wieder zulässig.
+    if (existing?.status === 'DECLINED') {
+      const days =
+        (Date.now() - existing.updatedAt.getTime()) / (1000 * 60 * 60 * 24);
+      if (days < 90) {
+        throw new ConflictException(
+          'Dieser Kandidat hat Ihre Anfrage abgelehnt. Eine erneute Anfrage ist erst nach 90 Tagen möglich.',
+        );
+      }
+    }
     const request = existing
       ? await this.prisma.contactRequest.update({
           where: { id: existing.id },
@@ -749,7 +761,7 @@ export class EmployerService {
 
   async adminCreateCompany(dto: AdminCreateCompanyDto, ip: string) {
     // Reuse the profile field mapping (and its PLZ → centroid geocoding).
-    const patch = this.profilePatch(dto.profile as UpdateEmployerProfileDto);
+    const patch = this.profilePatch(dto.profile);
     const name = (patch.name as string) ?? '';
     if (!name || name.length < 2) {
       throw new BadRequestException('profile.firmenname is required');

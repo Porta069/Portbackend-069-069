@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsEmail,
@@ -29,16 +30,36 @@ export class UpdateEmployerProfileDto {
   @IsOptional() @IsString() @MaxLength(160) strasse?: string;
   @IsOptional() @IsString() @MaxLength(5) plz?: string;
   @IsOptional() @IsString() @MaxLength(80) ort?: string;
-  @IsOptional() @IsString() @MaxLength(200) website?: string;
+  // Muss eine echte http(s)-Adresse sein: der Wert wird im Handwerker-Bereich
+  // als anklickbarer Link ausgegeben — ohne Schema-Prüfung ließe sich hier
+  // "javascript:..." hinterlegen und im Browser fremder Nutzer ausführen.
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  @Matches(/^$|^https?:\/\/[^\s]+$/i, {
+    message: 'website must start with http:// or https://',
+  })
+  website?: string;
   @IsOptional() @IsString() @MaxLength(80) kontaktName?: string;
   @IsOptional() @IsString() @MaxLength(80) kontaktPosition?: string;
   @IsOptional() @IsString() @MaxLength(40) kontaktTelefon?: string;
   @IsOptional() @IsString() @MaxLength(254) kontaktEmail?: string;
-  @IsOptional() @IsArray() @IsString({ each: true }) benefits?: string[];
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(12)
+  @IsString({ each: true })
+  @MaxLength(60, { each: true })
+  benefits?: string[];
   @IsOptional() @IsString() @MaxLength(40) montage?: string;
   @IsOptional() @IsString() @MaxLength(4) urlaubstage?: string;
   /** Logo as a small data URL; empty string clears it. */
-  @IsOptional() @IsString() @MaxLength(700_000) logo?: string;
+  @IsOptional()
+  @IsString()
+  @MaxLength(700_000)
+  @Matches(/^$|^data:image\/(jpeg|png|webp|svg\+xml);base64,/, {
+    message: 'logo must be a base64 image data URL',
+  })
+  logo?: string;
 }
 
 /** One answered match question on a job posting (range + weight). */
@@ -64,7 +85,7 @@ export class SaveJobDto {
   @IsString() @MinLength(3) @MaxLength(120) title!: string;
   @IsString() @MinLength(2) @MaxLength(60) gewerk!: string;
   @IsOptional() @IsString() @MaxLength(8000) description?: string;
-  @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[];
+  @IsOptional() @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) @MaxLength(40, { each: true }) tags?: string[];
   @IsOptional() @IsString() @MaxLength(80) city?: string;
   @IsOptional() @IsNumber() @Min(-90) @Max(90) lat?: number;
   @IsOptional() @IsNumber() @Min(-180) @Max(180) lng?: number;
@@ -75,7 +96,7 @@ export class SaveJobDto {
   @IsOptional() @IsIn(['Haustür', 'Betrieb']) startpunkt?: string;
   @IsOptional() @IsInt() @Min(0) @Max(60) urlaubstage?: number;
   @IsOptional() @IsString() @MaxLength(40) startText?: string;
-  @IsOptional() @IsArray() @IsString({ each: true }) extras?: string[];
+  @IsOptional() @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) @MaxLength(40, { each: true }) extras?: string[];
   @IsOptional() @IsIn(['DRAFT', 'ACTIVE', 'PAUSED', 'ARCHIVED']) status?: string;
 
   @IsOptional()
@@ -185,8 +206,12 @@ export class AdminAccountDto {
  * matchable WITHOUT ever visiting the platform themselves.
  */
 export class AdminCreateCompanyDto {
+  // Feld-für-Feld validiert (Typen + Längen) — sonst führen falsche Typen
+  // im Service zu Laufzeitfehlern statt zu einer sauberen 400.
   @IsObject()
-  profile!: Record<string, unknown>; // validated field-by-field in the service via UpdateEmployerProfileDto
+  @ValidateNested()
+  @Type(() => UpdateEmployerProfileDto)
+  profile!: UpdateEmployerProfileDto;
 
   @IsIn(['ADMIN', 'AI'])
   source!: 'ADMIN' | 'AI';

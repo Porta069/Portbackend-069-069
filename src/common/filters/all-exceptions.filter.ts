@@ -22,6 +22,14 @@ interface ErrorBody {
  * Internal (non-HttpException) errors never leak their message or stack to the
  * client — the full detail is logged server-side against a correlation id.
  */
+/**
+ * Pfad ohne Query — Query-Parameter tragen hier echte personenbezogene Daten
+ * (Standortkoordinaten, gesuchte E-Mail-Adressen) und gehören nicht ins Log.
+ */
+function safePath(url: string | undefined): string {
+  return (url ?? '').split('?')[0];
+}
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter');
@@ -52,12 +60,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // Log full detail server-side only.
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
-        `[${correlationId}] ${request.method} ${request.url} -> ${status}`,
+        `[${correlationId}] ${request.method} ${safePath(request.url)} -> ${status}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
     } else {
       this.logger.warn(
-        `[${correlationId}] ${request.method} ${request.url} -> ${status}: ${
+        `[${correlationId}] ${request.method} ${safePath(request.url)} -> ${status}: ${
           Array.isArray(message) ? message.join('; ') : message
         }`,
       );

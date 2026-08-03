@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -224,6 +225,19 @@ export class JobsService {
     };
   }
 
+  /**
+   * Schreibende Handwerker-Aktionen (bewerben, merken, Angebot/Freigabe
+   * beantworten, Arbeitsorte speichern) sind APPLICANT-Konten vorbehalten —
+   * ein Betriebskonto hat hier fachlich nichts verloren.
+   */
+  private async requireApplicant(payload: JwtPayload) {
+    const user = await this.auth.getActiveUser(payload);
+    if (user.role !== 'APPLICANT') {
+      throw new ForbiddenException('Applicant account required');
+    }
+    return user;
+  }
+
   /** Posting-IDs auf der Merkliste des Nutzers. */
   private async favoriteIds(userId: string): Promise<Set<string>> {
     const rows = await this.prisma.favorite.findMany({
@@ -353,7 +367,9 @@ export class JobsService {
     const user = await this.auth.getActiveUser(payload);
     const profile = this.matching.extractProfile(user);
     const favorites = await this.prisma.favorite.findMany({
-      where: { userId: user.id, jobPosting: { status: { not: 'ARCHIVED' } } },
+      // Nur veröffentlichte Stände: ein Betrieb, der ein Inserat zurück auf
+      // Entwurf setzt, darf es über die Merkliste nicht weiter preisgeben.
+      where: { userId: user.id, jobPosting: { status: { in: ['ACTIVE', 'PAUSED'] } } },
       include: { jobPosting: { include: this.postingInclude() } },
       orderBy: { createdAt: 'desc' },
     });
@@ -365,9 +381,9 @@ export class JobsService {
   }
 
   async addFavorite(payload: JwtPayload, jobId: string) {
-    const user = await this.auth.getActiveUser(payload);
+    const user = await this.requireApplicant(payload);
     const posting = await this.prisma.jobPosting.findFirst({
-      where: { id: jobId, status: { not: 'ARCHIVED' } },
+      where: { id: jobId, status: { in: ['ACTIVE', 'PAUSED'] } },
     });
     if (!posting) throw new NotFoundException('Job not found');
     await this.prisma.favorite.upsert({
@@ -379,7 +395,7 @@ export class JobsService {
   }
 
   async removeFavorite(payload: JwtPayload, jobId: string) {
-    const user = await this.auth.getActiveUser(payload);
+    const user = await this.requireApplicant(payload);
     await this.prisma.favorite.deleteMany({
       where: { userId: user.id, jobPostingId: jobId },
     });
@@ -389,7 +405,7 @@ export class JobsService {
   // ── Applications ──────────────────────────────────────────────────────────
 
   async apply(payload: JwtPayload, jobId: string) {
-    const user = await this.auth.getActiveUser(payload);
+    const user = await this.requireApplicant(payload);
     const posting = await this.prisma.jobPosting.findFirst({
       where: { id: jobId, status: 'ACTIVE' },
     });
@@ -449,7 +465,7 @@ export class JobsService {
   }
 
   async respondOffer(payload: JwtPayload, id: string, dto: RespondOfferDto) {
-    const user = await this.auth.getActiveUser(payload);
+    const user = await this.requireApplicant(payload);
     const offer = await this.prisma.jobOffer.findFirst({
       where: { id, userId: user.id },
     });
@@ -491,7 +507,7 @@ export class JobsService {
     id: string,
     dto: RespondContactRequestDto,
   ) {
-    const user = await this.auth.getActiveUser(payload);
+    const user = await this.requireApplicant(payload);
     const request = await this.prisma.contactRequest.findFirst({
       where: { id, userId: user.id },
     });
@@ -513,7 +529,7 @@ export class JobsService {
   }
 
   async saveWorkLocations(payload: JwtPayload, dto: SaveWorkLocationsDto) {
-    const user = await this.auth.getActiveUser(payload);
+    const user = await this.requireApplicant(payload);
     const pd = (user.profileData ?? {}) as Record<string, unknown>;
     const step3 = (pd['3'] ?? {}) as Record<string, unknown>;
     const profileData = {

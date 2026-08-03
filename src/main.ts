@@ -59,7 +59,9 @@ async function bootstrap(): Promise<void> {
   // server-to-server and the key must never live in browser JavaScript.
   app.enableCors({
     origin: appCfg.corsOrigins,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    // PUT gehört dazu: /me/work-locations speichert die Arbeitsorte damit.
+    // Fehlt die Methode, blockt der Browser schon den Preflight.
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: false,
     maxAge: 600,

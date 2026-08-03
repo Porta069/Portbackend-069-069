@@ -47,6 +47,25 @@ import { HealthModule } from './health/health.module';
             transport: isProd
               ? undefined
               : { target: 'pino-pretty', options: { singleLine: true } },
+            /**
+             * Eigener Request-Serializer statt des Standards.
+             *
+             * Der Standard protokolliert die VOLLE URL samt Query sowie die
+             * rohe IP. Beides trägt hier echte personenbezogene Daten:
+             * `/jobs/:id/travel?lat=…&lng=…` enthält die aktuelle Position des
+             * Nutzers, `/applications?email=…` die gesuchte Adresse. Geloggt
+             * werden deshalb nur Methode und Pfad OHNE Query — und keine IP
+             * (die Audit-Tabelle speichert sie ohnehin nur gehasht).
+             */
+            serializers: {
+              req(req: { method?: string; url?: string; id?: unknown }) {
+                return {
+                  id: req.id,
+                  method: req.method,
+                  path: (req.url ?? '').split('?')[0],
+                };
+              },
+            },
             // Never log secrets, credentials, codes or PII-bearing payloads.
             redact: {
               paths: [

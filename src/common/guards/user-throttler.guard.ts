@@ -1,38 +1,51 @@
 import { Injectable } from '@nestjs/common';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import { Reflector } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
+import {
+  ThrottlerGuard,
+  ThrottlerModuleOptions,
+  ThrottlerStorage,
+} from '@nestjs/throttler';
 import { Request } from 'express';
+import { AuthConfig } from '../../config/configuration';
+import { verifyJwt } from '../../auth/jwt';
 
 /**
- * Rate limiting per ACCOUNT instead of per IP whenever the caller is
- * authenticated.
+ * Rate limiting per ACCOUNT instead of per IP — aber nur mit GÜLTIGEM Token.
  *
- * Why: mobile carriers put thousands of subscribers behind a handful of
- * NAT addresses (CGNAT) — and our users are almost exclusively on phones.
- * With IP-based counting, one busy user could rate-limit unrelated
- * Handwerker on the same carrier. The token subject is the honest unit of
- * "one user"; anonymous traffic still falls back to the IP.
+ * Warum überhaupt kontobezogen: Mobilfunkanbieter teilen sich wenige
+ * NAT-Adressen (CGNAT), und unsere Nutzer sind fast ausschließlich mobil
+ * unterwegs. Bei IP-Zählung könnte ein aktiver Nutzer fremde Handwerker im
+ * selben Netz aussperren.
  *
- * The token is NOT verified here (that is JwtAuthGuard's job) — the value is
- * only a bucket key. A forged token would merely place the request in a
- * different bucket, never grant access.
+ * Warum die Signatur hier geprüft wird: Der Zähler-Schlüssel darf NICHT aus
+ * einem ungeprüften Token stammen. Sonst hängt ein Angreifer an jeden Versuch
+ * eine erfundene Nutzer-ID und bekommt pro Anfrage einen frischen Zähler —
+ * womit die strengen Limits auf Login, OTP und Passwort-Zurücksetzen
+ * wirkungslos wären. Ungültige oder fehlende Token fallen deshalb immer auf
+ * die IP zurück.
  */
 @Injectable()
 export class UserThrottlerGuard extends ThrottlerGuard {
+  private readonly jwtSecret: string;
+
+  constructor(
+    options: ThrottlerModuleOptions,
+    storageService: ThrottlerStorage,
+    reflector: Reflector,
+    config: ConfigService,
+  ) {
+    super(options, storageService, reflector);
+    this.jwtSecret = config.get<AuthConfig>('auth')!.jwtSecret;
+  }
+
   protected async getTracker(req: Request): Promise<string> {
     const header = req.header('authorization');
     if (header?.startsWith('Bearer ')) {
-      const payload = header.slice(7).split('.')[1];
-      if (payload) {
-        try {
-          const json = JSON.parse(
-            Buffer.from(payload, 'base64url').toString('utf8'),
-          ) as { sub?: unknown };
-          if (typeof json.sub === 'string' && json.sub.length > 0) {
-            return `user:${json.sub}`;
-          }
-        } catch {
-          /* malformed token → fall through to IP */
-        }
+      const payload = verifyJwt(header.slice(7).trim(), this.jwtSecret);
+      // Nur echte, unverfälschte Sitzungstoken bekommen einen eigenen Zähler.
+      if (payload && payload.purpose === 'access') {
+        return `user:${payload.sub}`;
       }
     }
     return `ip:${req.ip ?? 'unknown'}`;

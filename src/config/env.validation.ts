@@ -82,6 +82,12 @@ export const envSchema = z
     // Only deliver SMS to these country prefixes (anti international pumping).
     SMS_ALLOWED_COUNTRY_PREFIXES: csvList().default('+49,+43,+41'),
 
+    // Routing-Dienst für die exakte Fahrzeit (eigene Instanz möglich).
+    OSRM_URL: z
+      .string()
+      .url()
+      .default('https://router.project-osrm.org'),
+
     STORAGE_PROVIDER: z.enum(['s3']).default('s3'),
     S3_ENDPOINT: z.string().url().optional(),
     S3_REGION: z.string().default('eu-central-1'),

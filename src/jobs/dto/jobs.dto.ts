@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsIn,
   IsInt,
@@ -109,6 +110,7 @@ export class WorkLocationDto {
 /** PUT /me/work-locations */
 export class SaveWorkLocationsDto {
   @IsArray()
+  @ArrayMaxSize(20)
   @ValidateNested({ each: true })
   @Type(() => WorkLocationDto)
   locations!: WorkLocationDto[];

@@ -680,15 +680,15 @@ export class AuthService {
       });
 
       const resetUrl = `${this.cfg.passwordResetUrl}?token=${token}`;
-      try {
-        await this.email.sendPasswordResetLink(user.email, resetUrl);
-      } catch (err) {
-        // Never surface delivery issues to the caller (enumeration channel).
+      // Bewusst NICHT abgewartet: sonst dauert die Antwort für existierende
+      // Konten spürbar länger als für unbekannte — ein zuverlässiges Orakel,
+      // um Konten zu erraten. Zustellfehler bleiben serverseitig.
+      void this.email.sendPasswordResetLink(user.email, resetUrl).catch((err) => {
         this.logger.error(
           'Password-reset email delivery failed',
           err instanceof Error ? err.stack : String(err),
         );
-      }
+      });
 
       await this.audit.record({
         action: 'auth.password_reset_requested',
