@@ -232,22 +232,41 @@ export class JobsService {
   }
 
   /** Abgelehnte Angebote des Nutzers → Feedback-Kontext fürs Scoring. */
-  private async declineContext(userId: string): Promise<DeclineContext> {
+  private async declineContext(
+    userId: string,
+    profile: WorkerProfile,
+  ): Promise<DeclineContext> {
     const declined = await this.prisma.jobOffer.findMany({
       where: { userId, status: 'DECLINED' },
       select: {
         declineReason: true,
-        jobPosting: { select: { companyId: true, salaryMax: true } },
+        jobPosting: {
+          select: { companyId: true, salaryMax: true, lat: true, lng: true },
+        },
       },
     });
     const byCompany = new Map<string, number>();
     let zuWeitCount = 0;
+    let zuWeitMinuten: number | null = null;
     let gehaltCount = 0;
     let gehaltDeclinedMax: number | null = null;
     for (const o of declined) {
       const c = o.jobPosting.companyId;
       byCompany.set(c, (byCompany.get(c) ?? 0) + 1);
-      if (o.declineReason === 'zu_weit') zuWeitCount++;
+      if (o.declineReason === 'zu_weit') {
+        zuWeitCount++;
+        // Kürzeste abgelehnte Anfahrt merken: wer 30 Minuten als zu weit
+        // ansieht, sieht 40 Minuten erst recht so.
+        const near = this.matching.nearestLocation(
+          profile,
+          o.jobPosting.lat,
+          o.jobPosting.lng,
+        );
+        if (near) {
+          const minuten = travelMinutes(Math.round(near.distanceKm * 10) / 10);
+          zuWeitMinuten = Math.min(zuWeitMinuten ?? minuten, minuten);
+        }
+      }
       if (o.declineReason === 'gehalt') {
         gehaltCount++;
         if (o.jobPosting.salaryMax != null) {
@@ -258,7 +277,13 @@ export class JobsService {
         }
       }
     }
-    return { byCompany, zuWeitCount, gehaltCount, gehaltDeclinedMax };
+    return {
+      byCompany,
+      zuWeitCount,
+      zuWeitMinuten,
+      gehaltCount,
+      gehaltDeclinedMax,
+    };
   }
 
   private postingInclude() {
@@ -292,7 +317,7 @@ export class JobsService {
         orderBy: { createdAt: 'desc' },
       }) as Promise<PostingWithRelations[]>,
       this.favoriteIds(user.id),
-      this.declineContext(user.id),
+      this.declineContext(user.id, profile),
     ]);
 
     let jobs = postings.map((p) =>
@@ -347,11 +372,12 @@ export class JobsService {
       include: this.postingInclude(),
     })) as PostingWithRelations | null;
     if (!posting) throw new NotFoundException('Job not found');
+    const profile = this.matching.extractProfile(user);
     return this.buildJobDto(
       posting,
-      this.matching.extractProfile(user),
+      profile,
       await this.favoriteIds(user.id),
-      await this.declineContext(user.id),
+      await this.declineContext(user.id, profile),
     );
   }
 
@@ -368,7 +394,7 @@ export class JobsService {
       orderBy: { createdAt: 'desc' },
     });
     const ids = new Set(favorites.map((f) => f.jobPostingId));
-    const declineCtx = await this.declineContext(user.id);
+    const declineCtx = await this.declineContext(user.id, profile);
     return favorites.map((f) =>
       this.buildJobDto(f.jobPosting as PostingWithRelations, profile, ids, declineCtx),
     );
@@ -426,7 +452,7 @@ export class JobsService {
     const profile = this.matching.extractProfile(user);
     const [favorites, declineCtx] = await Promise.all([
       this.favoriteIds(user.id),
-      this.declineContext(user.id),
+      this.declineContext(user.id, profile),
     ]);
     const apps = await this.prisma.jobApplication.findMany({
       where: { userId: user.id },
@@ -453,7 +479,7 @@ export class JobsService {
     const profile = this.matching.extractProfile(user);
     const [favorites, declineCtx] = await Promise.all([
       this.favoriteIds(user.id),
-      this.declineContext(user.id),
+      this.declineContext(user.id, profile),
     ]);
     const offers = await this.prisma.jobOffer.findMany({
       where: { userId: user.id },

@@ -8,6 +8,7 @@ describe('declineAdjustments', () => {
   const ctx = (over: Partial<DeclineContext>): DeclineContext => ({
     byCompany: new Map(),
     zuWeitCount: 0,
+    zuWeitMinuten: null,
     gehaltCount: 0,
     gehaltDeclinedMax: null,
     ...over,
@@ -38,7 +39,7 @@ describe('declineAdjustments', () => {
     expect(other).toEqual([]);
   });
 
-  it('„zu weit“ erst ab 2 Absagen und nur für Stellen über 45 Min.', () => {
+  it('„zu weit“ erst ab 2 Absagen, ohne bekannte Anfahrt ab 45 Min.', () => {
     const once = service.declineAdjustments(
       ctx({ zuWeitCount: 1 }),
       { ...job, travelMinutes: 60 },
@@ -54,6 +55,37 @@ describe('declineAdjustments', () => {
       { ...job, travelMinutes: 30 },
     );
     expect(twiceNear).toEqual([]);
+  });
+
+  // Die feste 45-Minuten-Grenze ging an der Wirklichkeit vorbei: wer zweimal
+  // eine 30-Minuten-Stelle als zu weit ablehnt, bekam 40-Minuten-Stellen
+  // weiterhin unverändert bewertet. Jetzt zählt das eigene Verhalten.
+  it('„zu weit“ misst an der Entfernung, die der Nutzer selbst abgelehnt hat', () => {
+    const c = ctx({ zuWeitCount: 2, zuWeitMinuten: 30 });
+
+    const ab30 = service.declineAdjustments(c, { ...job, travelMinutes: 30 });
+    expect(ab30[0].id).toBe('declined_zu_weit');
+    expect(ab30[0].label).toContain('ab 30 Min.');
+
+    const dazwischen = service.declineAdjustments(c, { ...job, travelMinutes: 40 });
+    expect(dazwischen[0]?.id).toBe('declined_zu_weit');
+
+    const naeher = service.declineAdjustments(c, { ...job, travelMinutes: 25 });
+    expect(naeher).toEqual([]);
+  });
+
+  it('„zu weit“ fällt nie unter eine Viertelstunde', () => {
+    // Zwei Absagen bei 6 Minuten Anfahrt sind eher ein Fehlgriff als eine
+    // Aussage über Entfernung — sonst würde das gesamte Angebot abgewertet.
+    const c = ctx({ zuWeitCount: 2, zuWeitMinuten: 6 });
+    expect(service.declineAdjustments(c, { ...job, travelMinutes: 8 })).toEqual([]);
+    const abGrenze = service.declineAdjustments(c, { ...job, travelMinutes: 15 });
+    expect(abGrenze[0].label).toContain('ab 15 Min.');
+  });
+
+  it('ohne bekannte Fahrzeit der Stelle greift die Regel nicht', () => {
+    const c = ctx({ zuWeitCount: 2, zuWeitMinuten: 30 });
+    expect(service.declineAdjustments(c, { ...job, travelMinutes: null })).toEqual([]);
   });
 
   it('„Gehalt“ wertet nur Stellen bis zum abgelehnten Niveau ab', () => {

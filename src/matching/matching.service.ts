@@ -90,6 +90,12 @@ export interface DeclineContext {
   byCompany: Map<string, number>;
   /** Wie oft insgesamt mit Grund „zu weit weg“ abgelehnt wurde. */
   zuWeitCount: number;
+  /**
+   * Kürzeste Fahrzeit unter den wegen Entfernung abgelehnten Stellen —
+   * die Grenze, ab der dieser Nutzer eine Stelle selbst als zu weit ansieht.
+   * `null`, wenn keine Fahrzeit ermittelbar war (etwa ohne Arbeitsorte).
+   */
+  zuWeitMinuten: number | null;
   /** Wie oft insgesamt mit Grund „Gehalt passt nicht“ abgelehnt wurde. */
   gehaltCount: number;
   /** Höchstes salaryMax unter den wegen Gehalt abgelehnten Stellen. */
@@ -118,6 +124,12 @@ const FORMULA_NO_RANGE =
 const FORMULA_NO_CRITERIA =
   'Für diese Stelle sind keine bewertbaren Kriterien hinterlegt — ohne ' +
   'Kriterien gilt Score = 100.';
+
+/**
+ * Grenze für „zu weit weg“, solange sich aus den Absagen selbst keine
+ * ableiten lässt (etwa weil der Nutzer keine Arbeitsorte hinterlegt hat).
+ */
+const ZU_WEIT_FALLBACK_MIN = 45;
 
 @Injectable()
 export class MatchingService {
@@ -306,9 +318,15 @@ export class MatchingService {
   /**
    * Abzüge aus abgelehnten Angeboten — bewusst wenige, einfache Regeln:
    *  1. Je abgelehntem Angebot desselben Betriebs −8 Punkte (max. −20).
-   *  2. Ab zwei Absagen „zu weit weg“: Stellen über 45 Fahrminuten −10.
+   *  2. Ab zwei Absagen „zu weit weg“: Stellen ab der Entfernung, die der
+   *     Nutzer selbst schon abgelehnt hat, −10.
    *  3. Ab zwei Absagen „Gehalt passt nicht“: Stellen, deren Maximalgehalt
    *     nicht über dem bereits abgelehnten Niveau liegt, −10.
+   *
+   * Regel 2 nahm früher feste 45 Minuten an. Das war eine geratene Zahl, die
+   * an der Realität vorbeiging: wer zwei Stellen mit 30 Minuten Anfahrt als zu
+   * weit ablehnt, bekam weiterhin 40-Minuten-Stellen unverändert bewertet.
+   * Jetzt zählt wie bei Regel 3 das tatsächlich abgelehnte Niveau.
    */
   declineAdjustments(
     ctx: DeclineContext,
@@ -329,16 +347,18 @@ export class MatchingService {
       });
     }
 
-    if (
-      ctx.zuWeitCount >= 2 &&
-      job.travelMinutes != null &&
-      job.travelMinutes > 45
-    ) {
-      out.push({
-        id: 'declined_zu_weit',
-        label: 'Mehrfach „zu weit weg“ abgelehnt — Stellen über 45 Min. abgewertet',
-        points: 10,
-      });
+    if (ctx.zuWeitCount >= 2 && job.travelMinutes != null) {
+      // Untergrenze, damit zwei Absagen bei kurzer Anfahrt nicht gleich das
+      // ganze Angebot abwerten — unter einer Viertelstunde ist „zu weit“ eher
+      // ein Fehlgriff als eine Aussage über die Entfernung.
+      const grenze = Math.max(15, ctx.zuWeitMinuten ?? ZU_WEIT_FALLBACK_MIN);
+      if (job.travelMinutes >= grenze) {
+        out.push({
+          id: 'declined_zu_weit',
+          label: `Mehrfach „zu weit weg“ abgelehnt — Stellen ab ${grenze} Min. abgewertet`,
+          points: 10,
+        });
+      }
     }
 
     if (
