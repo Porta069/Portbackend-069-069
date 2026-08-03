@@ -7,7 +7,6 @@ import {
 } from '@nestjs/common';
 import {
   Company,
-  ContactRequestStatus,
   JobApplicationStatus,
   JobStatus,
   Prisma,
@@ -25,6 +24,10 @@ import {
 import { GeocodingService } from '../matching/geocoding.service';
 import { hashPassword } from '../common/crypto/password.util';
 import { normalizeEmail, normalizePhone } from '../common/contact/contact.util';
+import {
+  APPLICATION_STATUS_DE,
+  CONTACT_STATUS_DE,
+} from '../common/status-labels';
 import {
   AdminCreateCompanyDto,
   CandidateQueryDto,
@@ -57,20 +60,6 @@ const PRAEFERENZ_LABELS: Record<string, string> = {
   naehe: 'Kurzer Arbeitsweg',
   team: 'Gutes Team & Betriebsklima',
   aufstieg: 'Aufstiegsmöglichkeiten',
-};
-
-const CONTACT_STATUS_DE: Record<ContactRequestStatus, string> = {
-  REQUESTED: 'angefragt',
-  APPROVED: 'freigegeben',
-  DECLINED: 'abgelehnt',
-};
-
-const APPLICATION_STATUS_DE: Record<JobApplicationStatus, string> = {
-  SENT: 'gesendet',
-  SEEN: 'gesehen',
-  INTERVIEW: 'im_gespraech',
-  REJECTED: 'abgelehnt',
-  ACCEPTED: 'zusage',
 };
 
 const APPLICATION_STATUS_FROM_DE: Record<string, JobApplicationStatus> = {

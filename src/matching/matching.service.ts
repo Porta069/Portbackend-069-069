@@ -102,6 +102,23 @@ const FORMULA =
   'Score = 100 × (1 − Σ(Gewicht × Differenz) / Σ(Gewicht × maxDifferenz)); ' +
   'Differenz = Abstand der Antwort zur Range (0 innerhalb).';
 
+/**
+ * Ohne erreichbare Strafpunkte gibt es nichts zu teilen — die Formel oben
+ * stünde dann als „100 × (1 − 0 / 0)" da, also als Division durch Null.
+ * Das passiert, wenn die angegebene Spanne die gesamte Skala abdeckt
+ * (z. B. „0 bis 40 Jahre Erfahrung"): das Kriterium ist dann bewertet, kann
+ * den Score aber rechnerisch nie beeinflussen. Statt einer undefinierten
+ * Rechnung wird genau das erklärt.
+ */
+const FORMULA_NO_RANGE =
+  'Keines der bewerteten Kriterien kann den Score senken — die angegebenen ' +
+  'Spannen decken die gesamte Skala ab, jede Antwort liegt darin. Daher ' +
+  'gibt es keine erreichbaren Strafpunkte und der Score bleibt 100.';
+
+const FORMULA_NO_CRITERIA =
+  'Für diese Stelle sind keine bewertbaren Kriterien hinterlegt — ohne ' +
+  'Kriterien gilt Score = 100.';
+
 @Injectable()
 export class MatchingService {
   constructor(private readonly prisma: PrismaService) {}
@@ -266,6 +283,7 @@ export class MatchingService {
         ? Math.min(100, Math.max(0, Math.round(100 * (1 - totalPenalty / totalMaxPenalty))))
         : 100;
 
+    const scored = rows.some((r) => !r.skipped);
     return {
       criteria: rows,
       totalPenalty,
@@ -273,7 +291,12 @@ export class MatchingService {
       baseScore: score,
       adjustments: [],
       score,
-      formula: FORMULA,
+      formula:
+        totalMaxPenalty > 0
+          ? FORMULA
+          : scored
+            ? FORMULA_NO_RANGE
+            : FORMULA_NO_CRITERIA,
       aiScore: null,
     };
   }

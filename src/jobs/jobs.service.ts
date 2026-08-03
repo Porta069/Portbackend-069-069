@@ -6,7 +6,6 @@ import {
 } from '@nestjs/common';
 import {
   Company,
-  JobApplicationStatus,
   JobOfferStatus,
   JobPosting,
   Prisma,
@@ -23,6 +22,11 @@ import {
 } from '../matching/matching.service';
 import { RoutingService } from '../matching/routing.service';
 import { haversineKm, travelMinutes } from '../matching/geo.util';
+import {
+  APPLICATION_STATUS_DE,
+  CONTACT_STATUS_DE,
+  OFFER_STATUS_DE,
+} from '../common/status-labels';
 import {
   ListJobsQueryDto,
   RespondOfferDto,
@@ -81,26 +85,6 @@ export interface JobDto {
   companyPlz: string;
   companyKontaktName: string;
 }
-
-const APPLICATION_STATUS_DE: Record<JobApplicationStatus, string> = {
-  SENT: 'gesendet',
-  SEEN: 'gesehen',
-  INTERVIEW: 'im_gespraech',
-  REJECTED: 'abgelehnt',
-  ACCEPTED: 'zusage',
-};
-
-const OFFER_STATUS_DE: Record<JobOfferStatus, string> = {
-  NEW: 'neu',
-  ACCEPTED: 'angenommen',
-  DECLINED: 'abgelehnt',
-};
-
-const CONTACT_STATUS_DE: Record<string, string> = {
-  REQUESTED: 'angefragt',
-  APPROVED: 'freigegeben',
-  DECLINED: 'abgelehnt',
-};
 
 @Injectable()
 export class JobsService {

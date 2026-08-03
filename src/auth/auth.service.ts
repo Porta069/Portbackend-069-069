@@ -13,6 +13,14 @@ import { EmailService } from '../notifications/email.service';
 import { AuthConfig } from '../config/configuration';
 import { hashPassword, verifyPassword } from '../common/crypto/password.util';
 import { randomToken, sha256 } from '../common/crypto/crypto.util';
+import {
+  APPLICATION_STATUS_DE,
+  CONTACT_STATUS_DE,
+  DECLINE_REASON_DE,
+  DOCUMENT_TYPE_DE,
+  OFFER_STATUS_DE,
+  SUBMISSION_STATUS_DE,
+} from '../common/status-labels';
 import { promises as dnsPromises } from 'dns';
 import {
   isValidEmail,
@@ -550,7 +558,10 @@ export class AuthService {
     const user = await this.getActiveUser(payload);
 
     // Matching-Bereich: Merkliste, Bewerbungen, Angebote, Kontaktfreigaben.
-    const [favorites, applications, offers, contactRequests] =
+    // Dazu die über das Bewerbungsformular eingereichten Unterlagen: die
+    // hängen nicht am Konto, sondern an der bestätigten E-Mail-Adresse —
+    // Art. 15 DSGVO umfasst sie trotzdem, also werden sie darüber gesucht.
+    const [favorites, applications, offers, contactRequests, submissions] =
       await Promise.all([
         this.prisma.favorite.findMany({
           where: { userId: user.id },
@@ -578,6 +589,21 @@ export class AuthService {
         this.prisma.contactRequest.findMany({
           where: { userId: user.id },
           include: { company: { select: { name: true } } },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.application.findMany({
+          where: { email: user.email },
+          include: {
+            documents: {
+              select: {
+                type: true,
+                originalName: true,
+                mimeType: true,
+                sizeBytes: true,
+                createdAt: true,
+              },
+            },
+          },
           orderBy: { createdAt: 'desc' },
         }),
       ]);
@@ -609,7 +635,7 @@ export class AuthService {
         stelle: a.jobPosting.title,
         gewerk: a.jobPosting.gewerk,
         betrieb: a.jobPosting.company.name,
-        status: a.status,
+        status: APPLICATION_STATUS_DE[a.status],
         beworbenAm: a.createdAt.toISOString(),
         aktualisiertAm: a.updatedAt.toISOString(),
       })),
@@ -617,16 +643,47 @@ export class AuthService {
         stelle: o.jobPosting.title,
         betrieb: o.jobPosting.company.name,
         nachricht: o.message,
-        status: o.status,
-        ablehnungsgrund: o.declineReason,
+        status: OFFER_STATUS_DE[o.status],
+        ablehnungsgrund: o.declineReason
+          ? (DECLINE_REASON_DE[o.declineReason] ?? o.declineReason)
+          : null,
         erhaltenAm: o.createdAt.toISOString(),
       })),
       kontaktfreigaben: contactRequests.map((r) => ({
         betrieb: r.company.name,
         position: r.position,
-        status: r.status,
+        status: CONTACT_STATUS_DE[r.status],
         angefragtAm: r.createdAt.toISOString(),
         entschiedenAm: r.updatedAt.toISOString(),
+      })),
+      // Über das Bewerbungsformular eingereichte Angaben und Unterlagen.
+      // Von den Dateien selbst steht nur die Beschreibung hier — der Inhalt
+      // liegt im verschlüsselten Speicher und wird auf Anfrage herausgegeben.
+      eingereichteBewerbungen: submissions.map((s) => ({
+        eingereichtAm: s.createdAt.toISOString(),
+        status: SUBMISSION_STATUS_DE[s.status],
+        vorname: s.firstName,
+        nachname: s.lastName,
+        geburtsjahr: s.birthYear,
+        email: s.email,
+        telefon: s.phone,
+        beruf: s.profession,
+        bundesland: s.federalState,
+        verfuegbarAb: s.availability,
+        bestaetigt: s.verified,
+        bestaetigtAm: s.verifiedAt ? s.verifiedAt.toISOString() : null,
+        einwilligungAm: s.consentAt ? s.consentAt.toISOString() : null,
+        einwilligungText: s.consentText,
+        einwilligungVersion: s.consentVersion,
+        einwilligungFoto: s.consentPhoto,
+        geloeschtAm: s.erasedAt ? s.erasedAt.toISOString() : null,
+        unterlagen: s.documents.map((d) => ({
+          art: DOCUMENT_TYPE_DE[d.type] ?? d.type,
+          dateiname: d.originalName,
+          dateityp: d.mimeType,
+          groesseBytes: d.sizeBytes,
+          hochgeladenAm: d.createdAt.toISOString(),
+        })),
       })),
     };
   }

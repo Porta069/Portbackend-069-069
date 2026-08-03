@@ -107,6 +107,26 @@ describe('MatchingService', () => {
     expect(result.score).toBe(100);
   });
 
+  // Deckt die Spanne die ganze Skala ab, gibt es keine erreichbaren
+  // Strafpunkte. Der Rechenweg darf dann nicht als „100 × (1 − 0 / 0)"
+  // erscheinen, sondern muss erklären, warum nichts zu rechnen ist.
+  it('explains instead of dividing by zero when the range covers the scale', () => {
+    const q = question({ key: 'a', answerKey: 'aiAnswers.x', scaleMin: 0, scaleMax: 10 });
+    const result = service.score([criterion(q, 0, 10, 1)], profileWith({ x: 7 }));
+
+    expect(result.totalMaxPenalty).toBe(0);
+    expect(result.score).toBe(100);
+    expect(result.criteria[0].skipped).toBe(false);
+    expect(result.formula).not.toContain('Σ(Gewicht × Differenz)');
+    expect(result.formula).toContain('gesamte Skala');
+  });
+
+  it('says so plainly when a posting has no criteria at all', () => {
+    const result = service.score([], profileWith({ x: 7 }));
+    expect(result.score).toBe(100);
+    expect(result.formula).toContain('keine bewertbaren Kriterien');
+  });
+
   it('derives checkbox membership as 0/1 and maps radio answers', () => {
     const meister = question({
       key: 'meister',
