@@ -4,6 +4,10 @@
 
 generator client {
   provider = "prisma-client-js"
+  // Erlaubt `relationLoadStrategy: "join"`: verschachtelte `include`s werden
+  // dann als EIN SQL-Statement mit LATERAL JOINs ausgeführt statt als eine
+  // Abfrage je Ebene. Auf der Free-Instanz kostet jede Ebene rund 113 ms.
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {

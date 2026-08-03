@@ -291,6 +291,7 @@ export class EmployerService {
     // vorher lief dafür ein eigenes groupBy als zweite Runde.
     const postings = await this.prisma.jobPosting.findMany({
       where: { companyId: company.id, status: { not: 'ARCHIVED' } },
+      relationLoadStrategy: 'join',
       include: {
         ...this.jobInclude(),
         _count: { select: { applications: true } },
@@ -377,6 +378,7 @@ export class EmployerService {
         source,
         criteria: { create: rows },
       },
+      relationLoadStrategy: 'join',
       include: this.jobInclude(),
     });
     return this.toJobDto(posting);
@@ -486,10 +488,12 @@ export class EmployerService {
       q.jobPostingId != null
         ? await this.prisma.jobPosting.findFirst({
             where: { id: q.jobPostingId, companyId: company.id },
+            relationLoadStrategy: 'join',
             include: this.jobInclude(),
           })
         : await this.prisma.jobPosting.findFirst({
             where: { companyId: company.id, status: 'ACTIVE' },
+            relationLoadStrategy: 'join',
             include: this.jobInclude(),
             orderBy: { createdAt: 'desc' },
           });
@@ -725,6 +729,7 @@ export class EmployerService {
     const [apps, requests] = await Promise.all([
       this.prisma.jobApplication.findMany({
         where: { jobPosting: { companyId: company.id } },
+        relationLoadStrategy: 'join',
         include: {
           user: { select: CANDIDATE_FIELDS },
           jobPosting: { include: this.jobInclude() },

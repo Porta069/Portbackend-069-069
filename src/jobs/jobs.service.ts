@@ -313,6 +313,7 @@ export class JobsService {
           ...(q.abendsZuhause ? { montage: 'Jeden Abend zuhause' } : {}),
           ...(q.fahrzeitIstArbeitszeit ? { fahrzeitIstArbeitszeit: true } : {}),
         },
+        relationLoadStrategy: 'join',
         include: this.postingInclude(),
         orderBy: { createdAt: 'desc' },
       }) as Promise<PostingWithRelations[]>,
@@ -369,6 +370,7 @@ export class JobsService {
     const user = await this.auth.getActiveUser(payload);
     const posting = (await this.prisma.jobPosting.findFirst({
       where: { id, status: { not: 'DRAFT' } },
+      relationLoadStrategy: 'join',
       include: this.postingInclude(),
     })) as PostingWithRelations | null;
     if (!posting) throw new NotFoundException('Job not found');
@@ -391,6 +393,7 @@ export class JobsService {
       // Nur veröffentlichte Stände: ein Betrieb, der ein Inserat zurück auf
       // Entwurf setzt, darf es über die Merkliste nicht weiter preisgeben.
       where: { userId: user.id, jobPosting: { status: { in: ['ACTIVE', 'PAUSED'] } } },
+      relationLoadStrategy: 'join',
       include: { jobPosting: { include: this.postingInclude() } },
       orderBy: { createdAt: 'desc' },
     });
@@ -457,6 +460,7 @@ export class JobsService {
     ]);
     const apps = await this.prisma.jobApplication.findMany({
       where: { userId: user.id },
+      relationLoadStrategy: 'join',
       include: { jobPosting: { include: this.postingInclude() } },
       orderBy: { updatedAt: 'desc' },
     });
@@ -484,6 +488,7 @@ export class JobsService {
     ]);
     const offers = await this.prisma.jobOffer.findMany({
       where: { userId: user.id },
+      relationLoadStrategy: 'join',
       include: { jobPosting: { include: this.postingInclude() } },
       orderBy: { createdAt: 'desc' },
     });
