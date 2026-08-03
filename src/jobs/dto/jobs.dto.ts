@@ -13,6 +13,24 @@ import {
   ValidateNested,
 } from 'class-validator';
 
+/**
+ * Zahl aus der Adresszeile lesen — ein leerer Wert gilt als „nicht angegeben".
+ *
+ * `Number('')` ist 0: `?lat=&lng=7.5` berechnete sonst klaglos eine Route ab
+ * dem Äquator und wies sie als „genaue Route" aus, und ein leerer Filterwert
+ * wurde zur Zahl 0, die dann an der Untergrenze scheiterte. Die Umwandlung
+ * gehört deshalb hierher und nicht in `@Type(() => Number)`: dessen
+ * Konvertierung läuft ZUERST, sodass diese Prüfung nur noch die 0 zu sehen
+ * bekäme und die leere Eingabe gar nicht mehr erkennen könnte.
+ */
+const numberParam = () =>
+  Transform(({ value }: { value: unknown }) => {
+    if (value === '' || value === null || value === undefined) return undefined;
+    const n = Number(value);
+    // Unlesbares unverändert weiterreichen, damit die Prüfung es beanstandet.
+    return Number.isFinite(n) ? n : value;
+  });
+
 /** GET /jobs — filters mirror the Jobbörse UI. */
 export class ListJobsQueryDto {
   @IsOptional()
@@ -27,13 +45,13 @@ export class ListJobsQueryDto {
   gewerke?: string;
 
   @IsOptional()
-  @Type(() => Number)
+  @numberParam()
   @IsInt()
   @Min(1)
   maxTravelMinutes?: number;
 
   @IsOptional()
-  @Type(() => Number)
+  @numberParam()
   @IsInt()
   @Min(0)
   minSalary?: number;
@@ -51,26 +69,15 @@ export class ListJobsQueryDto {
   sort?: 'relevanz' | 'fahrzeit' | 'gehalt' | 'neueste';
 }
 
-/**
- * Leere Query-Werte abweisen: `Number('')` ist 0, ein `?lat=&lng=7.5` würde
- * sonst klaglos eine Route ab dem Äquator berechnen.
- */
-const emptyToUndefined = () =>
-  Transform(({ value }: { value: unknown }) =>
-    value === '' || value === null ? undefined : value,
-  );
-
 /** GET /jobs/:id/travel — Ausgangspunkt für die exakte Fahrzeit. */
 export class TravelQueryDto {
-  @emptyToUndefined()
-  @Type(() => Number)
+  @numberParam()
   @IsNumber()
   @Min(-90)
   @Max(90)
   lat!: number;
 
-  @emptyToUndefined()
-  @Type(() => Number)
+  @numberParam()
   @IsNumber()
   @Min(-180)
   @Max(180)
