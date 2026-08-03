@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
@@ -51,14 +51,25 @@ export class ListJobsQueryDto {
   sort?: 'relevanz' | 'fahrzeit' | 'gehalt' | 'neueste';
 }
 
+/**
+ * Leere Query-Werte abweisen: `Number('')` ist 0, ein `?lat=&lng=7.5` würde
+ * sonst klaglos eine Route ab dem Äquator berechnen.
+ */
+const emptyToUndefined = () =>
+  Transform(({ value }: { value: unknown }) =>
+    value === '' || value === null ? undefined : value,
+  );
+
 /** GET /jobs/:id/travel — Ausgangspunkt für die exakte Fahrzeit. */
 export class TravelQueryDto {
+  @emptyToUndefined()
   @Type(() => Number)
   @IsNumber()
   @Min(-90)
   @Max(90)
   lat!: number;
 
+  @emptyToUndefined()
   @Type(() => Number)
   @IsNumber()
   @Min(-180)

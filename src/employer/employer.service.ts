@@ -112,6 +112,8 @@ export interface CandidateDto {
   radiusKm: number | null;
   bereitschaft: string[];
   praeferenz: string | null;
+  gehaltVon: number | null;
+  gehaltBis: number | null;
   verfuegbarAb: string | null;
   matchScore: number;
   matchBreakdown: MatchBreakdown | null;
@@ -321,6 +323,9 @@ export class EmployerService {
     if (!criteria?.length) return [];
     const questions = await this.matching.listQuestions();
     const byKey = new Map(questions.map((q) => [q.key, q]));
+    // Jede Frage darf nur einmal bewertet werden — sonst kippt der
+    // Unique-Index beim Speichern und der Aufruf endete in einem 500er.
+    const seen = new Set<string>();
     const rows: { questionId: string; minValue: number; maxValue: number; weight: number }[] =
       [];
     for (const c of criteria) {
@@ -328,6 +333,12 @@ export class EmployerService {
       if (!q) {
         throw new BadRequestException(`Unknown match question: ${c.questionKey}`);
       }
+      if (seen.has(c.questionKey)) {
+        throw new BadRequestException(
+          `Die Frage „${q.label}" ist mehrfach bewertet — bitte nur einmal angeben.`,
+        );
+      }
+      seen.add(c.questionKey);
       const min = Math.max(q.scaleMin, Math.min(c.minValue, c.maxValue));
       const max = Math.min(q.scaleMax, Math.max(c.minValue, c.maxValue));
       rows.push({ questionId: q.id, minValue: min, maxValue: max, weight: c.weight });
@@ -346,8 +357,15 @@ export class EmployerService {
       // Explicit coords win (admin/AI supplies exact ones); else company city.
       lat: dto.lat ?? company.lat ?? centroid?.lat ?? null,
       lng: dto.lng ?? company.lng ?? centroid?.lng ?? null,
-      salaryMin: dto.salaryMin ?? null,
-      salaryMax: dto.salaryMax ?? null,
+      // Verdrehte Spanne wird getauscht statt "5000 – 1000 €" anzuzeigen.
+      salaryMin:
+        dto.salaryMin != null && dto.salaryMax != null
+          ? Math.min(dto.salaryMin, dto.salaryMax)
+          : (dto.salaryMin ?? null),
+      salaryMax:
+        dto.salaryMin != null && dto.salaryMax != null
+          ? Math.max(dto.salaryMin, dto.salaryMax)
+          : (dto.salaryMax ?? null),
       montage: dto.montage ?? company.montage,
       fahrzeitIstArbeitszeit: dto.fahrzeitIstArbeitszeit ?? false,
       startpunkt: dto.startpunkt ?? 'Betrieb',
@@ -447,6 +465,10 @@ export class EmployerService {
       praeferenz: profile.praeferenz
         ? (PRAEFERENZ_LABELS[profile.praeferenz] ?? profile.praeferenz)
         : null,
+      // Werden bei der Registrierung noch nicht erhoben — aber der
+      // Frontend-Vertrag erwartet die Felder, also explizit als null liefern.
+      gehaltVon: null,
+      gehaltBis: null,
       verfuegbarAb: null,
       matchScore: opts.matchScore,
       matchBreakdown: opts.matchBreakdown,

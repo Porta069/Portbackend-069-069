@@ -99,8 +99,10 @@ export class SaveJobDto {
   @IsOptional() @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) @MaxLength(40, { each: true }) extras?: string[];
   @IsOptional() @IsIn(['DRAFT', 'ACTIVE', 'PAUSED', 'ARCHIVED']) status?: string;
 
+  // Es gibt neun Katalogfragen — mehr Einträge sind zwangsläufig Duplikate.
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(20)
   @ValidateNested({ each: true })
   @Type(() => CriterionInputDto)
   criteria?: CriterionInputDto[];
