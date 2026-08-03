@@ -65,8 +65,10 @@ export class RoutingService {
       destinations.length = Math.max(1, 90 - sources.length);
     }
 
+    // Auf ~110 m gerundet: für eine Fahrzeit mehr als genau genug, aber die
+    // exakte Position einer Person verlässt damit unser System nicht.
     const coords = [...sources, ...destinations]
-      .map((p) => `${p.lng},${p.lat}`)
+      .map((p) => `${p.lng.toFixed(3)},${p.lat.toFixed(3)}`)
       .join(';');
     const srcIdx = sources.map((_, i) => i).join(';');
     const dstIdx = destinations.map((_, i) => i + sources.length).join(';');
@@ -81,7 +83,12 @@ export class RoutingService {
           `OSRM usage: ${this.fetches} fetches, ${this.failures} failures, cache ${this.cache.size}`,
         );
       }
-      const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+        // Identifizierende Kennung — verlangt die Nutzungsetikette der
+        // OpenStreetMap-Dienste und macht uns bei Problemen ansprechbar.
+        headers: { 'User-Agent': 'PortaWerk/1.0 (kontakt@portawerk.de)' },
+      });
       if (!res.ok) throw new Error(`OSRM ${res.status}`);
       const json = (await res.json()) as {
         code?: string;
