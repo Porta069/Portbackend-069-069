@@ -132,16 +132,13 @@ export class EmployerService {
   private async requireEmployer(
     payload: JwtPayload,
   ): Promise<{ user: User; company: Company }> {
-    const user = await this.auth.getActiveUser(payload);
+    // Firma kommt in derselben Abfrage mit — der Regelfall braucht damit
+    // eine Datenbank-Runde statt zwei.
+    const user = await this.auth.getActiveUserWithCompany(payload);
     if (user.role !== 'EMPLOYER') {
       throw new ForbiddenException('Employer account required');
     }
-    if (user.companyId) {
-      const company = await this.prisma.company.findUnique({
-        where: { id: user.companyId },
-      });
-      if (company) return { user, company };
-    }
+    if (user.company) return { user, company: user.company };
     const company = await this.prisma.company.create({
       data: {
         name:
@@ -290,20 +287,19 @@ export class EmployerService {
 
   async listJobs(payload: JwtPayload) {
     const { company } = await this.requireEmployer(payload);
+    // Die Bewerbungszahl zählt die Datenbank in derselben Abfrage mit —
+    // vorher lief dafür ein eigenes groupBy als zweite Runde.
     const postings = await this.prisma.jobPosting.findMany({
       where: { companyId: company.id, status: { not: 'ARCHIVED' } },
-      include: this.jobInclude(),
+      include: {
+        ...this.jobInclude(),
+        _count: { select: { applications: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
-    const counts = await this.prisma.jobApplication.groupBy({
-      by: ['jobPostingId'],
-      where: { jobPostingId: { in: postings.map((p) => p.id) } },
-      _count: true,
-    });
-    const countMap = new Map(counts.map((c) => [c.jobPostingId, c._count]));
     return postings.map((p) => ({
       ...this.toJobDto(p),
-      applications: countMap.get(p.id) ?? 0,
+      applications: p._count.applications,
     }));
   }
 

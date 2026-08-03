@@ -6,7 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, User } from '@prisma/client';
+import { Company, Prisma, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { EmailService } from '../notifications/email.service';
@@ -337,10 +337,15 @@ export class AuthService {
    * Resolves the user behind an access token and enforces revocation: the
    * account must exist, be active, and the token's `ver` must match.
    */
-  async getActiveUser(payload: JwtPayload): Promise<User> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-    });
+  /**
+   * Gültigkeit eines Tokens gegen den geladenen Nutzer prüfen. `tokenVersion`
+   * ist der Widerruf: bei Passwortwechsel oder Abmeldung überall wird sie
+   * erhöht, ältere Token passen dann nicht mehr.
+   */
+  private assertUsable(
+    user: { status: string; tokenVersion: number } | null,
+    payload: JwtPayload,
+  ): void {
     if (
       !user ||
       user.status !== 'ACTIVE' ||
@@ -348,7 +353,32 @@ export class AuthService {
     ) {
       throw new UnauthorizedException('Invalid or expired token');
     }
-    return user;
+  }
+
+  async getActiveUser(payload: JwtPayload): Promise<User> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+    });
+    this.assertUsable(user, payload);
+    return user!;
+  }
+
+  /**
+   * Wie `getActiveUser`, holt die Firma aber in derselben Abfrage mit.
+   *
+   * Auf der Free-Instanz kostet jede Datenbank-Runde rund 113 ms, davon nur
+   * ein Viertel die Datenbank selbst — die zweite Abfrage nach der Firma war
+   * damit spürbar teurer als die Daten, die sie holte.
+   */
+  async getActiveUserWithCompany(
+    payload: JwtPayload,
+  ): Promise<User & { company: Company | null }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      include: { company: true },
+    });
+    this.assertUsable(user, payload);
+    return user!;
   }
 
   // ── Email deliverability check ──────────────────────────────────────────────

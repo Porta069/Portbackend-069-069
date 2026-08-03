@@ -373,12 +373,13 @@ export class JobsService {
     })) as PostingWithRelations | null;
     if (!posting) throw new NotFoundException('Job not found');
     const profile = this.matching.extractProfile(user);
-    return this.buildJobDto(
-      posting,
-      profile,
-      await this.favoriteIds(user.id),
-      await this.declineContext(user.id, profile),
-    );
+    // Beide Abfragen hängen voneinander nicht ab — nacheinander gewartet
+    // kosteten sie eine volle Datenbank-Runde mehr als nötig.
+    const [favorites, declineCtx] = await Promise.all([
+      this.favoriteIds(user.id),
+      this.declineContext(user.id, profile),
+    ]);
+    return this.buildJobDto(posting, profile, favorites, declineCtx);
   }
 
   // ── Favorites (Merkliste) ─────────────────────────────────────────────────
