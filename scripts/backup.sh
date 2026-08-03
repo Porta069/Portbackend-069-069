@@ -6,8 +6,10 @@
 #
 #   SUPABASE_DB_PASSWORD=... ./scripts/backup.sh [zielordner]
 #
-# Wiederherstellen (im Notfall, überschreibt Daten!):
-#   psql "<CONNECTION>" < backup-JJJJMMTT-HHMM.sql
+# Wiederherstellen (im Notfall, überschreibt Daten!) — die Datei ist GEPACKT,
+# ohne gunzip schlaegt jede Wiederherstellung fehl:
+#   gunzip -c portawerk-JJJJMMTT-HHMM.sql.gz | psql "<CONNECTION>"
+# Am saubersten in eine LEERE Datenbank (der Dump enthaelt CREATE TABLE).
 set -euo pipefail
 
 HOST="aws-0-eu-west-1.pooler.supabase.com"
