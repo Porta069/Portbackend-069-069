@@ -1,0 +1,32 @@
+# ─── Eigener Routing-Dienst (OSRM) ───────────────────────────────────────────
+# Voraussetzung: einmalig `./scripts/osrm-prepare.sh` ausführen.
+# Danach:        docker compose -f docker-compose.osrm.yml up -d
+# Dann OSRM_URL im Backend auf die Adresse dieses Dienstes setzen.
+#
+# Warum eigener Dienst: an einen fremden Routing-Server gehen Standortdaten
+# unserer Nutzer. Siehe docs/routing.md.
+services:
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:latest
+    restart: unless-stopped
+    volumes:
+      - ./osrm-data:/data:ro
+    # Bewusst NUR auf localhost gebunden: OSRM kennt keine Authentifizierung,
+    # eine offen erreichbare Instanz rechnet für jeden im Netz mit. Für den
+    # Zugriff von außen einen Reverse-Proxy davorsetzen, der auf die IP des
+    # Backends beschränkt ist (oder beides ins selbe private Netz stellen).
+    ports:
+      - "127.0.0.1:5000:5000"
+    # --max-table-size: die Fahrzeit-Matrix fragt bis zu 90 Punkte auf einmal
+    # ab (siehe routing.service.ts), 100 deckt das mit Reserve ab.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'osrm-routed --algorithm mld --max-table-size 100 "/data/$$(cat /data/.osrm-base).osrm"'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -qO- 'http://localhost:5000/table/v1/driving/9.21,49.14;9.18,49.15?annotations=duration' | grep -q '\"code\":\"Ok\"'"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

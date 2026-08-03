@@ -33,3 +33,6 @@ logs
 
 # Local dev volumes
 /.data
+
+# Vorbereitete OSRM-Kartendaten (mehrere GB, per scripts/osrm-prepare.sh erzeugt)
+/osrm-data

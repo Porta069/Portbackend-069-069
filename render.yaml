@@ -74,6 +74,15 @@ services:
       - key: SMS_ALLOWED_COUNTRY_PREFIXES
         value: "+49,+43,+41"
 
+      # ── Fahrzeit-Routing ─────────────────────────────────────────────────
+      # BEWUSST NICHT GESETZT: an den Routing-Dienst gehen Standortdaten
+      # unserer Nutzer. Ohne Eintrag findet keine Übermittlung statt, die
+      # Fahrzeit bleibt die interne Schätzung. Erst eine eigene OSRM-Instanz
+      # (oder ein Anbieter mit AV-Vertrag) hier eintragen — docs/routing.md.
+      # Der öffentliche Demo-Server wird hier abgelehnt, auch wenn er dasteht.
+      - key: OSRM_URL
+        sync: false
+
       # ── Objektspeicher (S3-kompatibel — Uploads) ─────────────────────────
       - key: STORAGE_PROVIDER
         value: s3

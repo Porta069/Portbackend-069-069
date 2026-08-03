@@ -77,6 +77,14 @@ export interface AuthConfig {
   passwordResetUrl: string;
 }
 
+/** Fahrzeit-Routing — siehe `matching/routing.policy.ts`. */
+export interface RoutingConfig {
+  /** Adresse des Routing-Dienstes; leer = keine externe Anfrage. */
+  osrmUrl?: string;
+  /** Nur lokal: erlaubt den öffentlichen Demo-Server. */
+  allowPublicDemo: boolean;
+}
+
 export interface RootConfig {
   app: AppConfig;
   otp: OtpConfig;
@@ -87,6 +95,7 @@ export interface RootConfig {
   audit: AuditConfig;
   retention: RetentionConfig;
   auth: AuthConfig;
+  routing: RoutingConfig;
 }
 
 /**
@@ -159,6 +168,10 @@ export function buildConfig(env: Env): RootConfig {
       registrationDraftTtlSeconds: env.AUTH_REGISTRATION_DRAFT_TTL_SECONDS,
       passwordResetTtlSeconds: env.AUTH_PASSWORD_RESET_TTL_SECONDS,
       passwordResetUrl: env.AUTH_PASSWORD_RESET_URL,
+    },
+    routing: {
+      osrmUrl: env.OSRM_URL,
+      allowPublicDemo: env.ROUTING_ALLOW_PUBLIC_DEMO,
     },
   };
 }
