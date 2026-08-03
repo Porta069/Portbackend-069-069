@@ -1,4 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import {
   HealthCheck,
   HealthCheckService,
@@ -6,6 +7,10 @@ import {
 } from '@nestjs/terminus';
 import { PrismaService } from '../prisma/prisma.service';
 
+// Vom Rate-Limit ausgenommen: die Plattform-Prüfung und der Keep-Alive-Ping
+// teilen sich mit echten Nutzern die Edge-IP. Ein 429 auf diesem Pfad würde
+// als "Dienst tot" gewertet und einen Neustart auslösen.
+@SkipThrottle()
 @Controller('health')
 export class HealthController {
   constructor(

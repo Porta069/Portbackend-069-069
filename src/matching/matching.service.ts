@@ -120,7 +120,11 @@ export class MatchingService {
    * profileData is keyed by wizard step: "1" = survey, "3" = work locations,
    * "4" = AI answers (see the registration steps in the frontend).
    */
-  extractProfile(user: Pick<User, 'profileData' | 'avatar'>): WorkerProfile {
+  extractProfile(
+    // `avatar` ist optional: Aufrufer, die nur ein anonymes Kandidatenprofil
+    // brauchen, laden das große Bildfeld bewusst nicht mit.
+    user: Pick<User, 'profileData'> & { avatar?: string | null },
+  ): WorkerProfile {
     const pd = (user.profileData ?? {}) as Record<
       string,
       Record<string, unknown> | undefined
@@ -255,9 +259,11 @@ export class MatchingService {
       });
     }
 
+    // Auf 0..100 klemmen: profileData ist ungeprüftes JSON, ein Wert
+    // ausserhalb der Fragenskala könnte sonst einen negativen Score erzeugen.
     const score =
       totalMaxPenalty > 0
-        ? Math.round(100 * (1 - totalPenalty / totalMaxPenalty))
+        ? Math.min(100, Math.max(0, Math.round(100 * (1 - totalPenalty / totalMaxPenalty))))
         : 100;
 
     return {

@@ -127,6 +127,7 @@ model Application {
   @@index([status])
   @@index([retentionUntil])
   @@index([erasureRequestedAt])
+  @@index([erasedAt, createdAt(sort: Desc)])
 }
 
 enum ApplicationStatus {
@@ -188,6 +189,8 @@ model AuditEvent {
 
   @@index([action])
   @@index([createdAt])
+  // Sicherheits-Screen filtert nach Akteur und sortiert nach Zeit.
+  @@index([actorId, createdAt(sort: Desc)])
 }
 
 // ── User accounts (registration + login) ────────────────────────────────────
@@ -235,6 +238,11 @@ model User {
   jobOffers       JobOffer[]
   contactRequests ContactRequest[]
   favorites       Favorite[]
+
+  // Kandidatensuche filtert auf aktive Bewerber; companyId ist ein
+  // Fremdschlüssel ohne eigenen Index (Löschprüfungen, Firmen-Zuordnung).
+  @@index([role, status])
+  @@index([companyId])
 }
 
 enum UserStatus {
@@ -358,6 +366,9 @@ model JobPosting {
 
   @@index([companyId])
   @@index([status, gewerk])
+  // Jobbörse: status-Filter + Sortierung nach Alter; Arbeitgeberliste je Firma.
+  @@index([status, createdAt(sort: Desc)])
+  @@index([companyId, status, createdAt(sort: Desc)])
 }
 
 enum JobStatus {
@@ -398,6 +409,7 @@ model JobApplication {
 
   @@unique([jobPostingId, userId])
   @@index([userId])
+  @@index([userId, updatedAt(sort: Desc)])
 }
 
 enum JobApplicationStatus {
@@ -443,7 +455,6 @@ model Favorite {
   createdAt    DateTime   @default(now())
 
   @@unique([userId, jobPostingId])
-  @@index([userId])
 }
 
 // ── Contact requests (employer asks a candidate to reveal contact data) ─────
@@ -463,6 +474,7 @@ model ContactRequest {
 
   @@unique([companyId, userId])
   @@index([userId])
+  @@index([companyId, createdAt(sort: Desc)])
 }
 
 enum ContactRequestStatus {
@@ -519,8 +531,6 @@ model Partner {
   updatedAt     DateTime   @updatedAt
 
   referrals     Referral[]
-
-  @@index([slug])
 }
 
 // ── Referrals (a person the partner brought in) ─────────────────────────────
@@ -546,6 +556,7 @@ model Referral {
 
   @@index([partnerId])
   @@index([status])
+  @@index([status, partnerId])
 }
 
 enum ReferralStatus {

@@ -41,6 +41,9 @@ export const envSchema = z
     CORS_ORIGINS: csvOrigins,
 
     DATABASE_URL: z.string().min(1),
+    // Prisma liest DIRECT_URL für Migrationen direkt aus der Umgebung — ohne
+    // diese Zeile fällt ein Tippfehler erst beim Start auf.
+    DIRECT_URL: z.string().min(1).optional(),
 
     // Separate secrets per cryptographic purpose (key separation).
     OTP_HASHING_SECRET: z

@@ -285,21 +285,31 @@ export class JobsService {
     const user = await this.auth.getActiveUser(payload);
     const profile = this.matching.extractProfile(user);
 
+    const gewerke = (q.gewerke ?? '')
+      .split(',')
+      .map((g) => g.trim())
+      .filter(Boolean);
+    const needle = (q.query ?? '').trim().toLowerCase();
+
+    // Exakte Filter erledigt die Datenbank — sonst wandert die komplette
+    // Inseratstabelle (inklusive Firmenlogos) in den Speicher, nur um dort
+    // weggeworfen zu werden. Fahrzeit und Sortierung nach Score bleiben in
+    // JavaScript, weil beide erst berechnet werden müssen.
     const [postings, favorites, declineCtx] = await Promise.all([
       this.prisma.jobPosting.findMany({
-        where: { status: 'ACTIVE' },
+        where: {
+          status: 'ACTIVE',
+          ...(gewerke.length ? { gewerk: { in: gewerke } } : {}),
+          ...(q.minSalary ? { salaryMax: { gte: q.minSalary } } : {}),
+          ...(q.abendsZuhause ? { montage: 'Jeden Abend zuhause' } : {}),
+          ...(q.fahrzeitIstArbeitszeit ? { fahrzeitIstArbeitszeit: true } : {}),
+        },
         include: this.postingInclude(),
         orderBy: { createdAt: 'desc' },
       }) as Promise<PostingWithRelations[]>,
       this.favoriteIds(user.id),
       this.declineContext(user.id),
     ]);
-
-    const gewerke = (q.gewerke ?? '')
-      .split(',')
-      .map((g) => g.trim())
-      .filter(Boolean);
-    const needle = (q.query ?? '').trim().toLowerCase();
 
     let jobs = postings.map((p) =>
       this.buildJobDto(p, profile, favorites, declineCtx),
@@ -430,6 +440,10 @@ export class JobsService {
   async listApplications(payload: JwtPayload) {
     const user = await this.auth.getActiveUser(payload);
     const profile = this.matching.extractProfile(user);
+    const [favorites, declineCtx] = await Promise.all([
+      this.favoriteIds(user.id),
+      this.declineContext(user.id),
+    ]);
     const apps = await this.prisma.jobApplication.findMany({
       where: { userId: user.id },
       include: { jobPosting: { include: this.postingInclude() } },
@@ -439,7 +453,12 @@ export class JobsService {
       id: a.id,
       status: APPLICATION_STATUS_DE[a.status],
       updatedAt: a.updatedAt.toISOString(),
-      job: this.buildJobDto(a.jobPosting as PostingWithRelations, profile),
+      job: this.buildJobDto(
+        a.jobPosting as PostingWithRelations,
+        profile,
+        favorites,
+        declineCtx,
+      ),
     }));
   }
 
@@ -448,6 +467,10 @@ export class JobsService {
   async listOffers(payload: JwtPayload) {
     const user = await this.auth.getActiveUser(payload);
     const profile = this.matching.extractProfile(user);
+    const [favorites, declineCtx] = await Promise.all([
+      this.favoriteIds(user.id),
+      this.declineContext(user.id),
+    ]);
     const offers = await this.prisma.jobOffer.findMany({
       where: { userId: user.id },
       include: { jobPosting: { include: this.postingInclude() } },
@@ -460,7 +483,12 @@ export class JobsService {
         o.contactPerson || o.jobPosting.company.kontaktName || '',
       receivedAt: o.createdAt.toISOString(),
       status: OFFER_STATUS_DE[o.status],
-      job: this.buildJobDto(o.jobPosting as PostingWithRelations, profile),
+      job: this.buildJobDto(
+        o.jobPosting as PostingWithRelations,
+        profile,
+        favorites,
+        declineCtx,
+      ),
     }));
   }
 

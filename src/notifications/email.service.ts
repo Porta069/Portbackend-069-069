@@ -8,6 +8,25 @@ import { maskEmail } from '../common/contact/contact.util';
  * Email delivery. In `console` mode (dev) it logs a masked line instead of
  * sending, so no real code is ever transmitted or fully written to logs.
  */
+/**
+ * Bricht einen Anbieter-Aufruf nach `ms` ab. Ohne Deadline blockiert ein
+ * hängender Dienst einen Request-Handler minutenlang — auf einer kleinen
+ * Instanz reicht das, um die ganze Anwendung auszubremsen.
+ */
+async function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -33,12 +52,16 @@ export class EmailService {
       return;
     }
 
-    const { error } = await this.resend.emails.send({
+    const { error } = await withTimeout(
+      this.resend.emails.send({
       from: this.cfg.from,
       to,
       subject: 'Dein PortaGast Bestätigungscode',
       text: `Dein Bestätigungscode lautet: ${code}\n\nDer Code ist ${this.ttlMinutes} Minuten gültig. Falls du diese Anfrage nicht gestellt hast, ignoriere diese E-Mail.`,
-    });
+      }),
+      10_000,
+      'email send',
+    );
 
     if (error) {
       // Do not include the code or full address in the thrown/logged error.
@@ -57,12 +80,16 @@ export class EmailService {
       return;
     }
 
-    const { error } = await this.resend.emails.send({
+    const { error } = await withTimeout(
+      this.resend.emails.send({
       from: this.cfg.from,
       to,
       subject: 'PortaGast — Passwort zurücksetzen',
       text: `Du hast das Zurücksetzen deines Passworts angefordert.\n\nÖffne diesen Link, um ein neues Passwort zu vergeben:\n${resetUrl}\n\nDer Link ist zeitlich begrenzt gültig und nur einmal verwendbar. Falls du diese Anfrage nicht gestellt hast, ignoriere diese E-Mail.`,
-    });
+      }),
+      10_000,
+      'email send',
+    );
 
     if (error) {
       this.logger.error(`Password-reset email failed for ${maskEmail(to)}`);

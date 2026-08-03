@@ -22,7 +22,7 @@ import {
   MatchingService,
   WorkerProfile,
 } from '../matching/matching.service';
-import { plzCentroid } from '../matching/geo.util';
+import { GeocodingService } from '../matching/geocoding.service';
 import { hashPassword } from '../common/crypto/password.util';
 import { normalizeEmail, normalizePhone } from '../common/contact/contact.util';
 import {
@@ -80,6 +80,27 @@ const APPLICATION_STATUS_FROM_DE: Record<string, JobApplicationStatus> = {
   zusage: 'ACCEPTED',
 };
 
+/**
+ * Spalten, die für ein anonymes Kandidatenprofil gebraucht werden.
+ * Bewusst OHNE passwordHash und avatar.
+ */
+const CANDIDATE_FIELDS = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  email: true,
+  phone: true,
+  profileData: true,
+  lastLoginAt: true,
+  updatedAt: true,
+} as const;
+
+/** Kandidat in der schlanken Form, die CANDIDATE_FIELDS liefert. */
+type CandidateUser = Pick<
+  User,
+  'id' | 'firstName' | 'lastName' | 'email' | 'phone' | 'profileData' | 'lastLoginAt' | 'updatedAt'
+>;
+
 export interface CandidateDto {
   id: string;
   handle: string;
@@ -108,6 +129,7 @@ export class EmployerService {
     private readonly auth: AuthService,
     private readonly audit: AuditService,
     private readonly matching: MatchingService,
+    private readonly geo: GeocodingService,
   ) {}
 
   // ── Access ────────────────────────────────────────────────────────────────
@@ -188,14 +210,7 @@ export class EmployerService {
     if (dto.gruendungsjahr !== undefined) data.gruendungsjahr = dto.gruendungsjahr;
     if (dto.mitarbeiter !== undefined) data.mitarbeiter = dto.mitarbeiter;
     if (dto.strasse !== undefined) data.strasse = dto.strasse;
-    if (dto.plz !== undefined) {
-      data.plz = dto.plz;
-      const centroid = plzCentroid(dto.plz);
-      if (centroid) {
-        data.lat = centroid.lat;
-        data.lng = centroid.lng;
-      }
-    }
+    if (dto.plz !== undefined) data.plz = dto.plz;
     if (dto.ort !== undefined) data.ort = dto.ort;
     if (dto.website !== undefined) data.website = dto.website;
     if (dto.kontaktName !== undefined) data.kontaktName = dto.kontaktName;
@@ -214,9 +229,19 @@ export class EmployerService {
 
   async updateProfile(payload: JwtPayload, dto: UpdateEmployerProfileDto) {
     const { user, company } = await this.requireEmployer(payload);
+    const data = this.profilePatch(dto);
+    // Echte Koordinaten der VOLLSTÄNDIGEN PLZ statt der groben Leitregion —
+    // daran hängen Fahrzeit, Umkreisfilter und Match-Begründung.
+    if (dto.plz !== undefined) {
+      const coords = await this.geo.resolve(dto.plz);
+      if (coords) {
+        data.lat = coords.lat;
+        data.lng = coords.lng;
+      }
+    }
     const updated = await this.prisma.company.update({
       where: { id: company.id },
-      data: this.profilePatch(dto),
+      data,
     });
     if (dto.firmenname !== undefined) {
       await this.prisma.user.update({
@@ -311,7 +336,7 @@ export class EmployerService {
   }
 
   private async saveJobData(company: Company, dto: SaveJobDto) {
-    const centroid = plzCentroid(company.plz);
+    const centroid = company.lat == null ? await this.geo.resolve(company.plz) : null;
     return {
       title: dto.title.trim(),
       gewerk: dto.gewerk,
@@ -390,14 +415,14 @@ export class EmployerService {
 
   // ── Candidate search ──────────────────────────────────────────────────────
 
-  private candidateHandle(user: User, gewerk: string): string {
+  private candidateHandle(user: Pick<User, 'id'>, gewerk: string): string {
     const short = user.id.replace(/-/g, '').slice(0, 4).toUpperCase();
     const trade = gewerk.split('/')[0]?.trim() || 'Handwerker';
     return `${trade} #${short}`;
   }
 
   private toCandidateDto(
-    user: User,
+    user: CandidateUser,
     profile: WorkerProfile,
     opts: {
       distanceKm: number | null;
@@ -444,7 +469,7 @@ export class EmployerService {
 
   async searchCandidates(payload: JwtPayload, q: CandidateQueryDto) {
     const { company } = await this.requireEmployer(payload);
-    const centroid = plzCentroid(q.plz);
+    const centroid = await this.geo.resolve(q.plz);
     if (!centroid) {
       throw new BadRequestException('Bitte gib eine fünfstellige Postleitzahl ein.');
     }
@@ -466,8 +491,13 @@ export class EmployerService {
     }
 
     const [workers, requests] = await Promise.all([
+      // Nur die Felder, die toCandidateDto/extractProfile wirklich brauchen.
+      // Ohne `select` lädt Prisma auch passwordHash und den Avatar als
+      // Data-URL (bis 700 KB je Person) — bei vielen Bewerbern der mit
+      // Abstand größte Posten.
       this.prisma.user.findMany({
         where: { role: 'APPLICANT', status: 'ACTIVE' },
+        select: CANDIDATE_FIELDS,
       }),
       this.prisma.contactRequest.findMany({ where: { companyId: company.id } }),
     ]);
@@ -569,6 +599,7 @@ export class EmployerService {
     const { company } = await this.requireEmployer(payload);
     const worker = await this.prisma.user.findFirst({
       where: { id: userId, role: 'APPLICANT', status: 'ACTIVE' },
+      select: { id: true },
     });
     if (!worker) throw new NotFoundException('Candidate not found');
 
@@ -590,22 +621,33 @@ export class EmployerService {
         );
       }
     }
-    const request = existing
-      ? await this.prisma.contactRequest.update({
-          where: { id: existing.id },
-          data: { status: 'REQUESTED', position: dto.position },
-        })
-      : await this.prisma.contactRequest.create({
-          data: { companyId: company.id, userId, position: dto.position },
-        });
-    return { status: CONTACT_STATUS_DE[request.status] };
+    try {
+      const request = existing
+        ? await this.prisma.contactRequest.update({
+            where: { id: existing.id },
+            data: { status: 'REQUESTED', position: dto.position },
+          })
+        : await this.prisma.contactRequest.create({
+            data: { companyId: company.id, userId, position: dto.position },
+          });
+      return { status: CONTACT_STATUS_DE[request.status] };
+    } catch (e) {
+      // Doppelklick/zwei Tabs: der Unique-Index greift — sauberer 409 statt 500.
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        throw new ConflictException('Du hast diesen Kandidaten bereits angefragt.');
+      }
+      throw e;
+    }
   }
 
   async listRequests(payload: JwtPayload) {
     const { company } = await this.requireEmployer(payload);
     const requests = await this.prisma.contactRequest.findMany({
       where: { companyId: company.id },
-      include: { user: true },
+      include: { user: { select: CANDIDATE_FIELDS } },
       orderBy: { createdAt: 'desc' },
     });
     return requests.map((r) => {
@@ -637,6 +679,7 @@ export class EmployerService {
     if (!posting) throw new NotFoundException('Job posting not found');
     const worker = await this.prisma.user.findFirst({
       where: { id: userId, role: 'APPLICANT', status: 'ACTIVE' },
+      select: { id: true },
     });
     if (!worker) throw new NotFoundException('Candidate not found');
 
@@ -676,7 +719,7 @@ export class EmployerService {
       this.prisma.jobApplication.findMany({
         where: { jobPosting: { companyId: company.id } },
         include: {
-          user: true,
+          user: { select: CANDIDATE_FIELDS },
           jobPosting: { include: this.jobInclude() },
         },
         orderBy: { createdAt: 'desc' },
@@ -775,10 +818,13 @@ export class EmployerService {
       }
     }
 
+    // Auch der KI-/Admin-Pfad bekommt die echte Position.
+    const coords = patch.plz ? await this.geo.resolve(String(patch.plz)) : null;
     const company = await this.prisma.company.create({
       data: {
         ...(patch as Prisma.CompanyCreateInput),
         name,
+        ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
         source: dto.source,
         managedNote: dto.managedNote ?? null,
       },
