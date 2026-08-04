@@ -63,21 +63,17 @@ export class UpdateEmployerProfileDto {
 }
 
 /** One answered match question on a job posting (range + weight). */
-export class CriterionInputDto {
-  @IsString()
-  @MaxLength(60)
-  questionKey!: string;
-
-  @IsNumber()
-  minValue!: number;
-
-  @IsNumber()
-  maxValue!: number;
-
-  @IsInt()
-  @Min(0)
-  @Max(5)
-  weight!: number;
+/**
+ * Gewichte je Matching-Kriterium, 0–5. Fehlt ein Eintrag, gilt die Vorgabe
+ * aus `matching/scoring.ts`; 0 nimmt das Kriterium aus der Wertung.
+ */
+export class GewichteDto {
+  @IsOptional() @IsInt() @Min(0) @Max(5) aufgaben?: number;
+  @IsOptional() @IsInt() @Min(0) @Max(5) erfahrung?: number;
+  @IsOptional() @IsInt() @Min(0) @Max(5) beruf?: number;
+  @IsOptional() @IsInt() @Min(0) @Max(5) prioritaeten?: number;
+  @IsOptional() @IsInt() @Min(0) @Max(5) fuehrerschein?: number;
+  @IsOptional() @IsInt() @Min(0) @Max(5) start?: number;
 }
 
 /** POST /employer/jobs + PATCH /employer/jobs/:id */
@@ -99,13 +95,52 @@ export class SaveJobDto {
   @IsOptional() @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) @MaxLength(40, { each: true }) extras?: string[];
   @IsOptional() @IsIn(['DRAFT', 'ACTIVE', 'PAUSED', 'ARCHIVED']) status?: string;
 
-  // Es gibt neun Katalogfragen — mehr Einträge sind zwangsläufig Duplikate.
+  // ── Anforderungsprofil ────────────────────────────────────────────────────
+  // Alle Werte müssen aus dem Fachkatalog stammen; geprüft wird das im
+  // Service, weil dort der Katalog liegt. Weggelassen heißt „ist mir egal".
+
+  /** Akzeptierte Ausbildungsbereiche — Ausschlusskriterium. */
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true })
+  bereiche?: string[];
+
+  /** Bevorzugte Ausbildungsberufe — fließt gewichtet ein. */
+  @IsOptional() @IsArray() @ArrayMaxSize(30) @IsString({ each: true })
+  berufe?: string[];
+
+  /** Mindest-Ausbildungsstand — Ausschlusskriterium. */
+  @IsOptional() @IsString() @MaxLength(40) ausbildungMin?: string;
+
+  /** Gesuchte Aufgabenbereiche. */
+  @IsOptional() @IsArray() @ArrayMaxSize(30) @IsString({ each: true })
+  aufgaben?: string[];
+
+  /**
+   * Wie viele der gesuchten Aufgabenbereiche abgedeckt sein MÜSSEN.
+   * 0 (Vorgabe) = keine Pflicht; die Bereiche fließen dann nur in die Punkte.
+   */
+  @IsOptional() @IsInt() @Min(0) @Max(30) aufgabenMin?: number;
+
+  @IsOptional() @IsString() @MaxLength(40) erfahrungMin?: string;
+  @IsOptional() @IsString() @MaxLength(40) erfahrungMax?: string;
+
+  /** Verlangte Montagebereitschaft — Ausschlusskriterium. */
+  @IsOptional() @IsString() @MaxLength(40) montageMin?: string;
+
+  @IsOptional() @IsString() @MaxLength(40) fuehrerscheinMin?: string;
+
+  /** Verlangtes Sprachniveau — Ausschlusskriterium. */
+  @IsOptional() @IsString() @MaxLength(40) deutschMin?: string;
+
+  /** Was der Betrieb bietet — trifft auf die Prioritäten des Handwerkers. */
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true })
+  gebotenes?: string[];
+
+  @IsOptional() @IsString() @MaxLength(40) startBis?: string;
+
   @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(20)
-  @ValidateNested({ each: true })
-  @Type(() => CriterionInputDto)
-  criteria?: CriterionInputDto[];
+  @ValidateNested()
+  @Type(() => GewichteDto)
+  gewichte?: GewichteDto;
 }
 
 /** GET /employer/candidates */
@@ -125,28 +160,35 @@ export class CandidateQueryDto {
   @IsString()
   jobPostingId?: string;
 
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  minErfahrung?: number;
-
-  /** Comma-separated required certificate labels. */
+  /** Mindeststufe der Berufserfahrung (Katalogwert, z. B. `3_5`). */
   @IsOptional()
   @IsString()
-  @MaxLength(400)
-  zertifikate?: string;
+  @MaxLength(40)
+  erfahrungMin?: string;
 
-  /** Comma-separated required willingness labels. */
+  /** Mindest-Ausbildungsstand (Katalogwert). */
   @IsOptional()
   @IsString()
-  @MaxLength(400)
-  bereitschaft?: string;
+  @MaxLength(40)
+  ausbildungMin?: string;
 
+  /** Komma-getrennte Aufgabenbereiche, die abgedeckt sein müssen. */
   @IsOptional()
   @IsString()
   @MaxLength(600)
-  gewerke?: string;
+  aufgaben?: string;
+
+  /** Komma-getrennte Ausbildungsbereiche. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(600)
+  bereiche?: string;
+
+  /** Verlangte Montagebereitschaft (Katalogwert). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  montageMin?: string;
 
   @IsOptional()
   @IsIn(['match', 'naehe', 'erfahrung'])

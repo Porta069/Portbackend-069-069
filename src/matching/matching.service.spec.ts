@@ -1,184 +1,148 @@
-import { MatchQuestion } from '@prisma/client';
-import { MatchingService, WorkerProfile } from './matching.service';
-import { PrismaService } from '../prisma/prisma.service';
+import { MatchingService } from './matching.service';
 
 /**
- * Verifies the exact score arithmetic the transparency view displays:
- * penalty = weight × distance-to-range, score = 100 × (1 − Σp / Σmax).
+ * Das Auslesen des Handwerkerprofils aus `profileData`.
+ *
+ * Der zweite Teil ist der wichtigere: Konten, die vor dem neuen Fragebogen
+ * entstanden sind, dürfen nicht plötzlich profillos dastehen — ein leeres
+ * Profil besteht zwar jedes Ausschlusskriterium, wird aber in keiner Wertung
+ * mehr berücksichtigt und rutscht damit hinter jeden vollständigen Bewerber.
  */
-describe('MatchingService', () => {
-  const service = new MatchingService({} as PrismaService);
+describe('MatchingService.extractProfile', () => {
+  const service = new MatchingService();
 
-  const question = (over: Partial<MatchQuestion>): MatchQuestion =>
-    ({
-      id: over.key ?? 'q',
-      key: 'q',
-      label: 'Frage',
-      hint: '',
-      scaleMin: 0,
-      scaleMax: 10,
-      unit: '',
-      answerKey: 'aiAnswers.x',
-      valueMap: null,
-      defaultWeight: 2,
-      sortOrder: 0,
-      active: true,
-      ...over,
-    }) as MatchQuestion;
+  const user = (profileData: unknown, avatar: string | null = null) =>
+    ({ profileData, avatar }) as Parameters<typeof service.extractProfile>[0];
 
-  const profileWith = (answers: Record<string, unknown>): WorkerProfile => ({
-    gewerke: [],
-    erfahrungJahre: null,
-    zertifikate: [],
-    bereitschaft: [],
-    praeferenz: null,
-    answers,
-    workLocations: [],
-    hasAvatar: false,
-  });
-
-  const criterion = (
-    q: MatchQuestion,
-    minValue: number,
-    maxValue: number,
-    weight: number,
-  ) => ({
-    id: `c-${q.key}`,
-    jobPostingId: 'job',
-    questionId: q.id,
-    minValue,
-    maxValue,
-    weight,
-    question: q,
-  });
-
-  it('spec example: weight 2 × difference 2 = penalty 4', () => {
-    // Worker answers 10, employer expects 8, weight 2 (the user's own example).
-    const q = question({ key: 'nettigkeit', answerKey: 'aiAnswers.nett', scaleMin: 1, scaleMax: 10 });
-    const result = service.score(
-      [criterion(q, 8, 8, 2)],
-      profileWith({ nett: 10 }),
-    );
-    const row = result.criteria[0];
-    expect(row.diff).toBe(2);
-    expect(row.penalty).toBe(4); // 2 × 2
-    // maxDiff = max(8−1, 10−8) = 7 → score = 100 × (1 − 4/14) ≈ 71
-    expect(row.maxDiff).toBe(7);
-    expect(result.score).toBe(71);
-  });
-
-  it('range answers: everything inside [6,10] costs nothing', () => {
-    const q = question({ key: 'r', scaleMin: 1, scaleMax: 10 });
-    const inside = service.score([criterion(q, 6, 10, 3)], profileWith({ x: 7 }));
-    expect(inside.criteria[0].diff).toBe(0);
-    expect(inside.score).toBe(100);
-
-    // Below the range: difference to the LOWER bound (6 − 4 = 2).
-    const below = service.score([criterion(q, 6, 10, 3)], profileWith({ x: 4 }));
-    expect(below.criteria[0].diff).toBe(2);
-    expect(below.criteria[0].penalty).toBe(6);
-  });
-
-  it('sums weighted penalties across questions', () => {
-    const q1 = question({ key: 'a', answerKey: 'aiAnswers.a' });
-    const q2 = question({ key: 'b', answerKey: 'aiAnswers.b' });
-    const result = service.score(
-      [criterion(q1, 5, 5, 2), criterion(q2, 0, 2, 1)],
-      profileWith({ a: 7, b: 6 }),
-    );
-    // q1: 2×2=4, q2: 1×4=4 → total 8; max: 2×5 + 1×8 = 18.
-    expect(result.totalPenalty).toBe(8);
-    expect(result.totalMaxPenalty).toBe(18);
-    expect(result.score).toBe(Math.round(100 * (1 - 8 / 18)));
-  });
-
-  it('skips unanswered questions without penalty', () => {
-    const q = question({ key: 'a' });
-    const result = service.score([criterion(q, 5, 5, 3)], profileWith({}));
-    expect(result.criteria[0].skipped).toBe(true);
-    expect(result.totalPenalty).toBe(0);
-    expect(result.score).toBe(100);
-  });
-
-  it('ignores zero-weight criteria entirely', () => {
-    const q = question({ key: 'a' });
-    const result = service.score([criterion(q, 5, 5, 0)], profileWith({ x: 0 }));
-    expect(result.criteria).toHaveLength(0);
-    expect(result.score).toBe(100);
-  });
-
-  // Deckt die Spanne die ganze Skala ab, gibt es keine erreichbaren
-  // Strafpunkte. Der Rechenweg darf dann nicht als „100 × (1 − 0 / 0)"
-  // erscheinen, sondern muss erklären, warum nichts zu rechnen ist.
-  it('explains instead of dividing by zero when the range covers the scale', () => {
-    const q = question({ key: 'a', answerKey: 'aiAnswers.x', scaleMin: 0, scaleMax: 10 });
-    const result = service.score([criterion(q, 0, 10, 1)], profileWith({ x: 7 }));
-
-    expect(result.totalMaxPenalty).toBe(0);
-    expect(result.score).toBe(100);
-    expect(result.criteria[0].skipped).toBe(false);
-    expect(result.formula).not.toContain('Σ(Gewicht × Differenz)');
-    expect(result.formula).toContain('gesamte Skala');
-  });
-
-  it('says so plainly when a posting has no criteria at all', () => {
-    const result = service.score([], profileWith({ x: 7 }));
-    expect(result.score).toBe(100);
-    expect(result.formula).toContain('keine bewertbaren Kriterien');
-  });
-
-  it('derives checkbox membership as 0/1 and maps radio answers', () => {
-    const meister = question({
-      key: 'meister',
-      answerKey: 'aiAnswers.ai_zertifikate:meister',
-      scaleMin: 0,
-      scaleMax: 1,
-    });
-    const umfeld = question({
-      key: 'umfeld',
-      answerKey: 'surveyAnswers.survey_umfeld',
-      scaleMin: 1,
-      scaleMax: 3,
-      valueMap: { klein: 1, mittel: 2, gross: 3 },
-    });
-
-    const p = profileWith({
-      ai_zertifikate: ['geselle', 'meister'],
-      survey_umfeld: 'mittel',
-    });
-    expect(service.workerValue(meister, p)).toBe(1);
-    expect(service.workerValue(umfeld, p)).toBe(2);
-    // "egal" is deliberately unmapped → null → matches everything.
-    expect(
-      service.workerValue(umfeld, profileWith({ survey_umfeld: 'egal' })),
-    ).toBeNull();
-  });
-
-  it('extracts the worker profile from step-keyed profileData', () => {
-    const profile = service.extractProfile({
-      avatar: null,
-      profileData: {
-        '1': {
-          surveyAnswers: { survey_ziel: 'gehalt', survey_bereitschaft: ['montage'] },
+  it('liest die Antworten des neuen Fragebogens', () => {
+    const { profil } = service.extractProfile(
+      user({
+        profil: {
+          bereich: 'shk',
+          ausbildungsstatus: 'techniker_meister',
+          beruf: 'anlagenmechaniker_shk',
+          aufgaben: ['heizungsbau', 'waermepumpen'],
+          erfahrung: '6_10',
+          prioritaeten: ['gehalt', 'firmenwagen'],
+          montage: 'gering',
+          fuehrerschein: 'c',
+          deutsch: 'muttersprachlich',
+          start: 'sofort',
         },
-        '3': {
-          workLocations: [
-            { id: 'l1', label: 'München', lat: 48.1, lng: 11.5, radiusKm: 40 },
-          ],
-        },
-        '4': {
-          aiAnswers: {
+      }),
+    );
+
+    expect(profil.bereich).toBe('shk');
+    expect(profil.aufgaben).toEqual(['heizungsbau', 'waermepumpen']);
+    expect(profil.erfahrung).toBe('6_10');
+    expect(profil.prioritaeten).toHaveLength(2);
+    expect(profil.fuehrerschein).toBe('c');
+  });
+
+  it('ohne jede Angabe bleibt das Profil leer statt zu raten', () => {
+    const { profil } = service.extractProfile(user({}));
+    expect(profil.bereich).toBeNull();
+    expect(profil.aufgaben).toEqual([]);
+    expect(profil.erfahrung).toBeNull();
+  });
+
+  it('verwirft Werte, die keine Zeichenkette sind', () => {
+    const { profil } = service.extractProfile(
+      user({ profil: { bereich: 42, aufgaben: ['heizungsbau', 7, null] } }),
+    );
+    expect(profil.bereich).toBeNull();
+    expect(profil.aufgaben).toEqual(['heizungsbau']);
+  });
+
+  describe('Überleitung alter Konten', () => {
+    const alt = (ai: Record<string, unknown>, survey: Record<string, unknown> = {}) =>
+      user({ '1': { surveyAnswers: survey }, '4': { aiAnswers: ai } });
+
+    it('übersetzt Gewerk, Jahre und Qualifikationen', () => {
+      const { profil } = service.extractProfile(
+        alt(
+          {
             ai_gewerke: ['Elektriker / Elektroniker'],
             ai_erfahrung: 9,
-            ai_zertifikate: ['geselle'],
+            ai_zertifikate: ['geselle', 'fuehrerschein'],
           },
-        },
-      },
+          { survey_bereitschaft: ['montage'], survey_ziel: 'gehalt' },
+        ),
+      );
+
+      expect(profil.bereich).toBe('elektronik');
+      expect(profil.erfahrung).toBe('6_10');
+      expect(profil.ausbildungsstatus).toBe('berufsausbildung');
+      expect(profil.fuehrerschein).toBe('b');
+      expect(profil.montage).toBe('regelmaessig');
+      expect(profil.prioritaeten).toEqual(['gehalt']);
     });
-    expect(profile.gewerke).toEqual(['Elektriker / Elektroniker']);
-    expect(profile.erfahrungJahre).toBe(9);
-    expect(profile.bereitschaft).toEqual(['montage']);
-    expect(profile.workLocations).toHaveLength(1);
-    expect(profile.praeferenz).toBe('gehalt');
+
+    it('Meister- und Technikerbrief heben den Ausbildungsstand', () => {
+      expect(
+        service.extractProfile(alt({ ai_zertifikate: ['meister'] })).profil
+          .ausbildungsstatus,
+      ).toBe('techniker_meister');
+      expect(
+        service.extractProfile(alt({ ai_zertifikate: ['techniker'] })).profil
+          .ausbildungsstatus,
+      ).toBe('techniker_meister');
+    });
+
+    it.each([
+      [0, 'keine'],
+      [1, '1_2'],
+      [2, '1_2'],
+      [3, '3_5'],
+      [5, '3_5'],
+      [6, '6_10'],
+      [10, '6_10'],
+      [11, 'ueber_10'],
+      [40, 'ueber_10'],
+    ])('%i Jahre werden zu Stufe „%s"', (jahre, stufe) => {
+      expect(service.extractProfile(alt({ ai_erfahrung: jahre })).profil.erfahrung).toBe(
+        stufe,
+      );
+    });
+
+    it('„kurzer Arbeitsweg" hat keine Entsprechung und wird nicht erfunden', () => {
+      // Die Entfernung steckt in den Arbeitsorten, nicht in den Prioritäten.
+      const { profil } = service.extractProfile(alt({}, { survey_ziel: 'naehe' }));
+      expect(profil.prioritaeten).toEqual([]);
+    });
+
+    it('das neue Format hat Vorrang vor dem alten', () => {
+      const { profil } = service.extractProfile(
+        user({
+          profil: { bereich: 'shk' },
+          '4': { aiAnswers: { ai_gewerke: ['Elektriker / Elektroniker'] } },
+        }),
+      );
+      expect(profil.bereich).toBe('shk');
+    });
+  });
+
+  describe('Arbeitsorte', () => {
+    it('übernimmt gültige Orte und ergänzt den Standardradius', () => {
+      const { workLocations } = service.extractProfile(
+        user({
+          '3': {
+            workLocations: [
+              { id: 'a', label: 'Heilbronn', lat: 49.14, lng: 9.21 },
+              { id: 'b', label: 'Ohne Koordinaten' },
+            ],
+          },
+        }),
+      );
+      expect(workLocations).toHaveLength(1);
+      expect(workLocations[0].radiusKm).toBe(30);
+    });
+  });
+
+  it('merkt sich, ob ein Profilbild hinterlegt ist', () => {
+    expect(service.extractProfile(user({}, 'data:image/jpeg;base64,x')).hasAvatar).toBe(
+      true,
+    );
+    expect(service.extractProfile(user({})).hasAvatar).toBe(false);
   });
 });

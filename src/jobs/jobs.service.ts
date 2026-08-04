@@ -14,7 +14,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import { JwtPayload } from '../auth/jwt';
 import {
-  CriterionWithQuestion,
   DeclineContext,
   MatchBreakdown,
   MatchingService,
@@ -34,10 +33,14 @@ import {
   SaveWorkLocationsDto,
 } from './dto/jobs.dto';
 
-type PostingWithRelations = JobPosting & {
-  company: Company;
-  criteria: CriterionWithQuestion[];
-};
+type PostingWithRelations = JobPosting & { company: Company };
+
+/**
+ * Ab wie vielen registrierten Handwerkern die Zahl auf der Startseite gezeigt
+ * wird. Darunter sagt eine echte, aber kleine Zahl weniger über die Plattform
+ * aus, als sie an Vertrauen kostet.
+ */
+const STATS_SCHWELLE = 50;
 
 /** Wire shape of a job in the worker UI (mirrors the frontend `Job` type). */
 export interface JobDto {
@@ -126,8 +129,30 @@ export class JobsService {
 
   // ── Catalog ───────────────────────────────────────────────────────────────
 
-  listQuestions() {
-    return this.matching.listQuestions();
+  /** Fachkatalog für Registrierung und Inserats-Editor. */
+  katalog() {
+    return this.matching.katalog();
+  }
+
+  /**
+   * Zahlen für die Startseite.
+   *
+   * `zeigen` sagt der Oberfläche, ob die Zahl überhaupt taugt: solange erst
+   * eine Handvoll Handwerker registriert ist, wirkt eine echte Zahl schwächer
+   * als gar keine. Erfunden wird trotzdem nichts — unterhalb der Schwelle
+   * wird schlicht nichts behauptet.
+   */
+  async stats() {
+    const [handwerker, betriebe] = await Promise.all([
+      this.prisma.user.count({ where: { role: 'APPLICANT', status: 'ACTIVE' } }),
+      this.prisma.company.count(),
+    ]);
+    return {
+      handwerker,
+      betriebe,
+      zeigen: handwerker >= STATS_SCHWELLE,
+      schwelle: STATS_SCHWELLE,
+    };
   }
 
   // ── Jobs ──────────────────────────────────────────────────────────────────
@@ -138,7 +163,10 @@ export class JobsService {
     favoriteIds?: Set<string>,
     declineCtx?: DeclineContext,
   ): JobDto {
-    let breakdown = this.matching.score(posting.criteria, profile);
+    let breakdown = this.matching.score(
+      this.matching.anforderungVon(posting),
+      profile,
+    );
     const near = this.matching.nearestLocation(profile, posting.lat, posting.lng);
     const distanceKm = near ? Math.round(near.distanceKm * 10) / 10 : null;
     const minutes = distanceKm != null ? travelMinutes(distanceKm) : null;
@@ -155,9 +183,20 @@ export class JobsService {
       );
     }
 
-    const gewerkMatch = profile.gewerke.includes(posting.gewerk);
+    const bereichPasst =
+      !!profile.profil.bereich && posting.bereiche.includes(profile.profil.bereich);
     const reasons: string[] = [];
-    if (gewerkMatch) reasons.push('Dein Gewerk');
+    if (bereichPasst) reasons.push('Dein Ausbildungsbereich');
+    const gemeinsameAufgaben = posting.aufgaben.filter((a) =>
+      profile.profil.aufgaben.includes(a),
+    );
+    if (gemeinsameAufgaben.length) {
+      reasons.push(
+        gemeinsameAufgaben.length === 1
+          ? 'Deine Erfahrung passt'
+          : `${gemeinsameAufgaben.length} passende Aufgabenbereiche`,
+      );
+    }
     if (minutes != null && minutes <= 30 && near) {
       reasons.push(`${minutes} Min. von „${near.location.label}“`);
     }
@@ -189,7 +228,7 @@ export class JobsService {
         start: posting.startText,
         extras: posting.extras,
       },
-      recommended: gewerkMatch && breakdown.score >= 70,
+      recommended: bereichPasst && breakdown.score >= 70,
       matchReasons: reasons,
       matchScore: breakdown.score,
       matchBreakdown: breakdown,
@@ -326,6 +365,11 @@ export class JobsService {
     );
 
     jobs = jobs.filter((j) => {
+      // Stellen, für die der Handwerker eine harte Anforderung nicht erfüllt,
+      // werden gar nicht erst vorgeschlagen — ein niedriger Prozentwert wäre
+      // hier die falsche Auskunft. Warum ausgeschlossen wurde, steht im
+      // Breakdown und lässt sich später gezielt anzeigen.
+      if (!j.matchBreakdown.passed) return false;
       if (
         needle &&
         !`${j.title} ${j.employer} ${j.city} ${j.gewerk} ${j.tags.join(' ')}`
@@ -599,16 +643,20 @@ export class JobsService {
       gap: { id: string; label: string; extraJobs: number; href: string };
     }[] = [
       {
-        done: p.gewerke.length > 0,
-        gap: { id: 'gewerk', label: 'Gewerk angeben', extraJobs: 40, href: '/einstellungen' },
+        done: !!p.profil.bereich,
+        gap: { id: 'bereich', label: 'Ausbildungsbereich angeben', extraJobs: 40, href: '/einstellungen' },
       },
       {
-        done: p.erfahrungJahre !== null,
+        done: p.profil.aufgaben.length > 0,
+        gap: { id: 'aufgaben', label: 'Aufgabenbereiche mit Erfahrung wählen', extraJobs: 25, href: '/einstellungen' },
+      },
+      {
+        done: p.profil.erfahrung !== null,
         gap: { id: 'erfahrung', label: 'Berufserfahrung ergänzen', extraJobs: 18, href: '/einstellungen' },
       },
       {
-        done: p.zertifikate.length > 0,
-        gap: { id: 'zertifikate', label: 'Qualifikationen eintragen (z. B. Führerschein BE)', extraJobs: 12, href: '/einstellungen' },
+        done: p.profil.fuehrerschein !== null,
+        gap: { id: 'fuehrerschein', label: 'Führerschein angeben', extraJobs: 12, href: '/einstellungen' },
       },
       {
         done: p.workLocations.length > 0,
@@ -634,23 +682,13 @@ export class JobsService {
     };
   }
 
-  /** Convenience for greeting/nav — the raw extracted profile. */
+  /** Das ausgelesene Profil — für Begrüßung, Navigation und Einstellungen. */
   async myMatchingProfile(payload: JwtPayload) {
     const user = await this.auth.getActiveUser(payload);
     const profile = this.matching.extractProfile(user);
-    const questions = await this.matching.listQuestions();
     return {
-      gewerke: profile.gewerke,
-      erfahrungJahre: profile.erfahrungJahre,
-      zertifikate: profile.zertifikate,
-      bereitschaft: profile.bereitschaft,
+      profil: profile.profil,
       workLocations: profile.workLocations,
-      // Per-question derived values — feeds the transparency view.
-      values: questions.map((q) => ({
-        questionKey: q.key,
-        label: q.label,
-        value: this.matching.workerValue(q, profile),
-      })),
     };
   }
 }

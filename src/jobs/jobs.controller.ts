@@ -33,11 +33,25 @@ import {
 export class JobsController {
   constructor(private readonly jobs: JobsService) {}
 
-  /** Public question catalog (labels, scales, default weights). */
-  @Get('match-questions')
+  /**
+   * Fachkatalog: Ausbildungsbereiche mit ihren Berufen und Aufgabenfeldern
+   * sowie alle festen Antwortskalen. Öffentlich, weil die Registrierung ihn
+   * vor dem Login braucht.
+   */
+  @Get('catalog')
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
-  questions() {
-    return this.jobs.listQuestions();
+  catalog() {
+    return this.jobs.katalog();
+  }
+
+  /**
+   * Zahlen für die Startseite: wie viele Handwerker und Betriebe dabei sind.
+   * Öffentlich und ohne Personenbezug.
+   */
+  @Get('stats')
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  stats() {
+    return this.jobs.stats();
   }
 
   // ── Jobbörse ──────────────────────────────────────────────────────────────

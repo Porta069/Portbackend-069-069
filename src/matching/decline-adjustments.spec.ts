@@ -1,9 +1,8 @@
 import { MatchingService, DeclineContext, MatchBreakdown } from './matching.service';
-import { PrismaService } from '../prisma/prisma.service';
 
 /** Regeln für das Absage-Feedback — jede Regel einzeln und kombiniert. */
 describe('declineAdjustments', () => {
-  const service = new MatchingService({} as PrismaService);
+  const service = new MatchingService();
 
   const ctx = (over: Partial<DeclineContext>): DeclineContext => ({
     byCompany: new Map(),
@@ -100,6 +99,8 @@ describe('declineAdjustments', () => {
 
   it('applyAdjustments: Endscore = Basis − Summe, nie unter 0', () => {
     const base = {
+      passed: true,
+      knockouts: [],
       criteria: [],
       totalPenalty: 0,
       totalMaxPenalty: 0,

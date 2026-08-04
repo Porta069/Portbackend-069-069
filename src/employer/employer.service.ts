@@ -8,6 +8,7 @@ import {
 import {
   Company,
   JobApplicationStatus,
+  JobPosting,
   JobStatus,
   Prisma,
   User,
@@ -29,38 +30,29 @@ import {
   CONTACT_STATUS_DE,
 } from '../common/status-labels';
 import {
+  ALLE_AUFGABEN,
+  ALLE_BERUFE,
+  AUSBILDUNGSSTATUS,
+  BEREICHE,
+  DEUTSCH,
+  ERFAHRUNG,
+  FUEHRERSCHEIN,
+  MONTAGE,
+  PRIORITAETEN,
+  START,
+  labelFuer,
+  rangAusbildung,
+  rangErfahrung,
+  rangMontage,
+} from '../matching/catalog';
+import {
   AdminCreateCompanyDto,
   CandidateQueryDto,
-  CriterionInputDto,
   RequestContactDto,
   SaveJobDto,
   SendOfferDto,
   UpdateEmployerProfileDto,
 } from './dto/employer.dto';
-
-// ── Display maps: stored option values → labels shown to employers ──────────
-const ZERTIFIKAT_LABELS: Record<string, string> = {
-  geselle: 'Gesellenbrief',
-  meister: 'Meisterbrief',
-  techniker: 'Staatl. gepr. Techniker',
-  fuehrerschein: 'Führerschein Kl. B / BE',
-  stapler: 'Staplerschein',
-  sonstige: 'Weitere Zertifikate',
-};
-
-const BEREITSCHAFT_LABELS: Record<string, string> = {
-  montage: 'Montage / Reisetätigkeit',
-  schicht: 'Schichtarbeit',
-  notdienst: 'Notdienst / Rufbereitschaft',
-  umzug: 'Umzug für den richtigen Job',
-};
-
-const PRAEFERENZ_LABELS: Record<string, string> = {
-  gehalt: 'Besseres Gehalt',
-  naehe: 'Kurzer Arbeitsweg',
-  team: 'Gutes Team & Betriebsklima',
-  aufstieg: 'Aufstiegsmöglichkeiten',
-};
 
 const APPLICATION_STATUS_FROM_DE: Record<string, JobApplicationStatus> = {
   gesehen: 'SEEN',
@@ -90,20 +82,27 @@ type CandidateUser = Pick<
   'id' | 'firstName' | 'lastName' | 'email' | 'phone' | 'profileData' | 'lastLoginAt' | 'updatedAt'
 >;
 
+/**
+ * Ein Kandidat, wie ihn der Betrieb sieht — anonym bis zur Freigabe.
+ * Alle Textfelder sind bereits die Klartext-Bezeichnungen aus dem Katalog,
+ * damit die Oberfläche keine eigene Übersetzungstabelle pflegen muss.
+ */
 export interface CandidateDto {
   id: string;
   handle: string;
-  gewerk: string;
-  erfahrungJahre: number | null;
-  zertifikate: string[];
+  bereich: string;
+  beruf: string | null;
+  ausbildung: string | null;
+  erfahrung: string | null;
+  aufgaben: string[];
+  prioritaeten: string[];
+  montage: string | null;
+  fuehrerschein: string | null;
+  deutsch: string | null;
+  start: string | null;
   region: string;
   distanceKm: number | null;
   radiusKm: number | null;
-  bereitschaft: string[];
-  praeferenz: string | null;
-  gehaltVon: number | null;
-  gehaltBis: number | null;
-  verfuegbarAb: string | null;
   matchScore: number;
   matchBreakdown: MatchBreakdown | null;
   status: string;
@@ -242,15 +241,7 @@ export class EmployerService {
 
   // ── Job postings ──────────────────────────────────────────────────────────
 
-  private jobInclude() {
-    return { criteria: { include: { question: true } } } as const;
-  }
-
-  private toJobDto(
-    posting: Prisma.JobPostingGetPayload<{
-      include: { criteria: { include: { question: true } } };
-    }>,
-  ) {
+  private toJobDto(posting: JobPosting) {
     return {
       id: posting.id,
       title: posting.title,
@@ -272,16 +263,20 @@ export class EmployerService {
       source: posting.source,
       createdAt: posting.createdAt.toISOString(),
       updatedAt: posting.updatedAt.toISOString(),
-      criteria: posting.criteria
-        .slice()
-        .sort((a, b) => a.question.sortOrder - b.question.sortOrder)
-        .map((c) => ({
-          questionKey: c.question.key,
-          label: c.question.label,
-          minValue: c.minValue,
-          maxValue: c.maxValue,
-          weight: c.weight,
-        })),
+      // Anforderungsprofil — die Grundlage des Matchings.
+      bereiche: posting.bereiche,
+      berufe: posting.berufe,
+      ausbildungMin: posting.ausbildungMin,
+      aufgaben: posting.aufgaben,
+      aufgabenMin: posting.aufgabenMin,
+      erfahrungMin: posting.erfahrungMin,
+      erfahrungMax: posting.erfahrungMax,
+      montageMin: posting.montageMin,
+      fuehrerscheinMin: posting.fuehrerscheinMin,
+      deutschMin: posting.deutschMin,
+      gebotenes: posting.gebotenes,
+      startBis: posting.startBis,
+      gewichte: posting.gewichte,
     };
   }
 
@@ -292,10 +287,7 @@ export class EmployerService {
     const postings = await this.prisma.jobPosting.findMany({
       where: { companyId: company.id, status: { not: 'ARCHIVED' } },
       relationLoadStrategy: 'join',
-      include: {
-        ...this.jobInclude(),
-        _count: { select: { applications: true } },
-      },
+      include: { _count: { select: { applications: true } } },
       orderBy: { createdAt: 'desc' },
     });
     return postings.map((p) => ({
@@ -304,32 +296,78 @@ export class EmployerService {
     }));
   }
 
-  /** Validates criterion ranges against the catalog and returns create rows. */
-  private async criteriaRows(criteria: CriterionInputDto[] | undefined) {
-    if (!criteria?.length) return [];
-    const questions = await this.matching.listQuestions();
-    const byKey = new Map(questions.map((q) => [q.key, q]));
-    // Jede Frage darf nur einmal bewertet werden — sonst kippt der
-    // Unique-Index beim Speichern und der Aufruf endete in einem 500er.
-    const seen = new Set<string>();
-    const rows: { questionId: string; minValue: number; maxValue: number; weight: number }[] =
-      [];
-    for (const c of criteria) {
-      const q = byKey.get(c.questionKey);
-      if (!q) {
-        throw new BadRequestException(`Unknown match question: ${c.questionKey}`);
-      }
-      if (seen.has(c.questionKey)) {
+  /**
+   * Prüft das Anforderungsprofil gegen den Fachkatalog.
+   *
+   * Ein Wert, den der Katalog nicht kennt, würde später beim Bewerten
+   * stillschweigend übersprungen — das Inserat wäre gespeichert, das Kriterium
+   * aber wirkungslos. Deshalb wird hier abgewiesen statt geschluckt.
+   */
+  private anforderungsDaten(dto: SaveJobDto) {
+    const ausListe = (
+      werte: string[] | undefined,
+      erlaubt: string[],
+      feld: string,
+    ): string[] => {
+      const liste = [...new Set(werte ?? [])];
+      const unbekannt = liste.filter((v) => !erlaubt.includes(v));
+      if (unbekannt.length) {
         throw new BadRequestException(
-          `Die Frage „${q.label}" ist mehrfach bewertet — bitte nur einmal angeben.`,
+          `Unbekannte Angabe bei „${feld}": ${unbekannt.join(', ')}.`,
         );
       }
-      seen.add(c.questionKey);
-      const min = Math.max(q.scaleMin, Math.min(c.minValue, c.maxValue));
-      const max = Math.min(q.scaleMax, Math.max(c.minValue, c.maxValue));
-      rows.push({ questionId: q.id, minValue: min, maxValue: max, weight: c.weight });
-    }
-    return rows;
+      return liste;
+    };
+
+    const einzeln = (
+      wert: string | undefined,
+      skala: { value: string }[],
+      feld: string,
+    ): string | null => {
+      if (wert == null || wert === '') return null;
+      if (!skala.some((o) => o.value === wert)) {
+        throw new BadRequestException(`Unbekannte Angabe bei „${feld}": ${wert}.`);
+      }
+      return wert;
+    };
+
+    const bereiche = ausListe(
+      dto.bereiche,
+      BEREICHE.map((b) => b.value),
+      'Ausbildungsbereiche',
+    );
+    const aufgaben = ausListe(dto.aufgaben, ALLE_AUFGABEN, 'Aufgabenbereiche');
+
+    // Mehr Pflichtbereiche zu verlangen als überhaupt gesucht werden, ergäbe
+    // ein Inserat, das niemand erfüllen kann.
+    const aufgabenMin = Math.max(0, Math.min(dto.aufgabenMin ?? 0, aufgaben.length));
+
+    // Verdrehte Erfahrungsspanne wird getauscht statt „6–10 bis 1–2" zu speichern.
+    const erfMin = einzeln(dto.erfahrungMin, ERFAHRUNG, 'Erfahrung von');
+    const erfMax = einzeln(dto.erfahrungMax, ERFAHRUNG, 'Erfahrung bis');
+    const rangVon = rangErfahrung(erfMin);
+    const rangBis = rangErfahrung(erfMax);
+    const tauschen = rangVon != null && rangBis != null && rangVon > rangBis;
+
+    return {
+      bereiche,
+      berufe: ausListe(dto.berufe, ALLE_BERUFE, 'Ausbildungsberufe'),
+      ausbildungMin: einzeln(dto.ausbildungMin, AUSBILDUNGSSTATUS, 'Ausbildungsstand'),
+      aufgaben,
+      aufgabenMin,
+      erfahrungMin: tauschen ? erfMax : erfMin,
+      erfahrungMax: tauschen ? erfMin : erfMax,
+      montageMin: einzeln(dto.montageMin, MONTAGE, 'Montagebereitschaft'),
+      fuehrerscheinMin: einzeln(dto.fuehrerscheinMin, FUEHRERSCHEIN, 'Führerschein'),
+      deutschMin: einzeln(dto.deutschMin, DEUTSCH, 'Deutschkenntnisse'),
+      gebotenes: ausListe(
+        dto.gebotenes,
+        PRIORITAETEN.map((p) => p.value),
+        'Gebotene Leistungen',
+      ),
+      startBis: einzeln(dto.startBis, START, 'Startzeitpunkt'),
+      gewichte: (dto.gewichte ?? undefined) as Prisma.InputJsonValue | undefined,
+    };
   }
 
   private async saveJobData(company: Company, dto: SaveJobDto) {
@@ -359,6 +397,7 @@ export class EmployerService {
       startText: dto.startText ?? 'Ab sofort',
       extras: (dto.extras ?? []).slice(0, 10),
       status: (dto.status ?? 'ACTIVE') as JobStatus,
+      ...this.anforderungsDaten(dto),
     };
   }
 
@@ -370,16 +409,12 @@ export class EmployerService {
   ) {
     const company =
       companyOverride ?? (await this.requireEmployer(payload!)).company;
-    const rows = await this.criteriaRows(dto.criteria);
     const posting = await this.prisma.jobPosting.create({
       data: {
         ...(await this.saveJobData(company, dto)),
         companyId: company.id,
         source,
-        criteria: { create: rows },
       },
-      relationLoadStrategy: 'join',
-      include: this.jobInclude(),
     });
     return this.toJobDto(posting);
   }
@@ -391,17 +426,11 @@ export class EmployerService {
     });
     if (!existing) throw new NotFoundException('Job posting not found');
 
-    const rows = await this.criteriaRows(dto.criteria);
-    const posting = await this.prisma.$transaction(async (tx) => {
-      await tx.jobCriterion.deleteMany({ where: { jobPostingId: id } });
-      return tx.jobPosting.update({
-        where: { id },
-        data: {
-          ...(await this.saveJobData(company, dto)),
-          criteria: { create: rows },
-        },
-        include: this.jobInclude(),
-      });
+    // Das Anforderungsprofil liegt jetzt in Spalten des Inserats — ein
+    // Austausch der Kriterien-Zeilen (und damit die Transaktion) entfällt.
+    const posting = await this.prisma.jobPosting.update({
+      where: { id },
+      data: await this.saveJobData(company, dto),
     });
     return this.toJobDto(posting);
   }
@@ -438,25 +467,28 @@ export class EmployerService {
       approved: boolean;
     },
   ): CandidateDto {
-    const gewerk = profile.gewerke[0] ?? 'Handwerk';
+    const p = profile.profil;
+    const bereichLabel = p.bereich ? labelFuer('bereich', p.bereich) : 'Handwerk';
     return {
       id: user.id,
-      handle: this.candidateHandle(user, gewerk),
-      gewerk: profile.gewerke.join(' · ') || 'Handwerk',
-      erfahrungJahre: profile.erfahrungJahre,
-      zertifikate: profile.zertifikate.map((z) => ZERTIFIKAT_LABELS[z] ?? z),
+      handle: this.candidateHandle(user, bereichLabel),
+      bereich: bereichLabel,
+      beruf: p.beruf ? labelFuer('beruf', p.beruf) : null,
+      ausbildung: p.ausbildungsstatus
+        ? labelFuer('ausbildung', p.ausbildungsstatus)
+        : null,
+      erfahrung: p.erfahrung ? labelFuer('erfahrung', p.erfahrung) : null,
+      aufgaben: p.aufgaben.map((a) => labelFuer('aufgabe', a)),
+      prioritaeten: p.prioritaeten.map((x) => labelFuer('prio', x)),
+      montage: p.montage ? labelFuer('montage', p.montage) : null,
+      fuehrerschein: p.fuehrerschein
+        ? labelFuer('fuehrerschein', p.fuehrerschein)
+        : null,
+      deutsch: p.deutsch ? labelFuer('deutsch', p.deutsch) : null,
+      start: p.start ? labelFuer('start', p.start) : null,
       region: opts.location?.label ?? '—',
       distanceKm: opts.distanceKm != null ? Math.round(opts.distanceKm) : null,
       radiusKm: opts.location?.radiusKm ?? null,
-      bereitschaft: profile.bereitschaft.map((b) => BEREITSCHAFT_LABELS[b] ?? b),
-      praeferenz: profile.praeferenz
-        ? (PRAEFERENZ_LABELS[profile.praeferenz] ?? profile.praeferenz)
-        : null,
-      // Werden bei der Registrierung noch nicht erhoben — aber der
-      // Frontend-Vertrag erwartet die Felder, also explizit als null liefern.
-      gehaltVon: null,
-      gehaltBis: null,
-      verfuegbarAb: null,
       matchScore: opts.matchScore,
       matchBreakdown: opts.matchBreakdown,
       status: opts.status,
@@ -488,13 +520,9 @@ export class EmployerService {
       q.jobPostingId != null
         ? await this.prisma.jobPosting.findFirst({
             where: { id: q.jobPostingId, companyId: company.id },
-            relationLoadStrategy: 'join',
-            include: this.jobInclude(),
           })
         : await this.prisma.jobPosting.findFirst({
             where: { companyId: company.id, status: 'ACTIVE' },
-            relationLoadStrategy: 'join',
-            include: this.jobInclude(),
             orderBy: { createdAt: 'desc' },
           });
     if (q.jobPostingId && !posting) {
@@ -514,65 +542,70 @@ export class EmployerService {
     ]);
     const requestByUser = new Map(requests.map((r) => [r.userId, r]));
 
-    const gewerkeFilter = (q.gewerke ?? '')
-      .split(',')
-      .map((g) => g.trim())
-      .filter(Boolean);
-    const requiredCerts = (q.zertifikate ?? '')
-      .split(',')
-      .map((z) => z.trim())
-      .filter(Boolean);
-    const requiredBereit = (q.bereitschaft ?? '')
-      .split(',')
-      .map((b) => b.trim())
-      .filter(Boolean);
+    const liste = (v: string | undefined) =>
+      (v ?? '')
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+    const bereicheFilter = liste(q.bereiche);
+    const aufgabenFilter = liste(q.aufgaben);
+    const erfahrungMin = rangErfahrung(q.erfahrungMin);
+    const ausbildungMin = rangAusbildung(q.ausbildungMin);
+    const montageMin = rangMontage(q.montageMin);
+
+    const anforderung = posting ? this.matching.anforderungVon(posting) : null;
 
     const out: CandidateDto[] = [];
+    // Für die Sortierung wird der Katalogwert gebraucht, nicht das Label.
+    const erfahrungRoh = new Map<string, string | null>();
     for (const worker of workers) {
       const profile = this.matching.extractProfile(worker);
+      const p = profile.profil;
       const near = this.matching.nearestLocation(
         profile,
         centroid.lat,
         centroid.lng,
       );
       if (!near || near.distanceKm > q.radiusKm) continue;
-      if (
-        gewerkeFilter.length &&
-        !profile.gewerke.some((g) => gewerkeFilter.includes(g))
-      ) {
+
+      // Filter aus der Suchmaske.
+      if (bereicheFilter.length && (!p.bereich || !bereicheFilter.includes(p.bereich))) {
         continue;
       }
-      if (
-        q.minErfahrung != null &&
-        (profile.erfahrungJahre ?? 0) < q.minErfahrung
-      ) {
+      if (aufgabenFilter.length && !aufgabenFilter.every((a) => p.aufgaben.includes(a))) {
         continue;
       }
-      const certLabels = profile.zertifikate.map(
-        (z) => ZERTIFIKAT_LABELS[z] ?? z,
-      );
-      if (!requiredCerts.every((z) => certLabels.includes(z))) continue;
-      const bereitLabels = profile.bereitschaft.map(
-        (b) => BEREITSCHAFT_LABELS[b] ?? b,
-      );
-      if (!requiredBereit.every((b) => bereitLabels.includes(b))) continue;
+      if (erfahrungMin != null && (rangErfahrung(p.erfahrung) ?? -1) < erfahrungMin) {
+        continue;
+      }
+      if (ausbildungMin != null && (rangAusbildung(p.ausbildungsstatus) ?? -1) < ausbildungMin) {
+        continue;
+      }
+      if (montageMin != null && (rangMontage(p.montage) ?? -1) < montageMin) {
+        continue;
+      }
 
       let matchScore: number;
       let matchBreakdown: MatchBreakdown | null = null;
-      if (posting && posting.criteria.length > 0) {
-        matchBreakdown = this.matching.score(posting.criteria, profile);
+      if (anforderung) {
+        matchBreakdown = this.matching.score(anforderung, profile);
+        // Wer an einem Ausschlusskriterium scheitert, ist für diese Stelle
+        // keine Besetzung — dann gar nicht erst vorschlagen.
+        if (!matchBreakdown.passed) continue;
         matchScore = matchBreakdown.score;
       } else {
-        // No posting to score against → transparent proximity/experience heuristic.
+        // Ohne Inserat zum Bewerten: nachvollziehbare Näherung aus Entfernung,
+        // eigenem Radius und Erfahrung.
         const nahe = Math.max(0, 1 - near.distanceKm / Math.max(q.radiusKm, 1));
         const willFahren = near.distanceKm <= near.location.radiusKm ? 1 : 0.45;
-        const erfahrung = Math.min(1, (profile.erfahrungJahre ?? 0) / 12);
+        const erfahrung = (rangErfahrung(p.erfahrung) ?? 0) / 4;
         matchScore = Math.round(
           (nahe * 0.5 + willFahren * 0.3 + erfahrung * 0.2) * 100,
         );
       }
 
       const request = requestByUser.get(worker.id);
+      erfahrungRoh.set(worker.id, p.erfahrung);
       out.push(
         this.toCandidateDto(worker, profile, {
           distanceKm: near.distanceKm,
@@ -590,17 +623,19 @@ export class EmployerService {
         return (a.distanceKm ?? 9_999) - (b.distanceKm ?? 9_999);
       }
       if (q.sort === 'erfahrung') {
-        return (b.erfahrungJahre ?? 0) - (a.erfahrungJahre ?? 0);
+        return (
+          (rangErfahrung(erfahrungRoh.get(b.id)) ?? -1) -
+          (rangErfahrung(erfahrungRoh.get(a.id)) ?? -1)
+        );
       }
       return b.matchScore - a.matchScore;
     });
 
     return {
       candidates: out,
-      scoredAgainst:
-        posting && posting.criteria.length > 0
-          ? { id: posting.id, title: posting.title }
-          : null,
+      scoredAgainst: anforderung
+        ? { id: posting!.id, title: posting!.title }
+        : null,
     };
   }
 
@@ -732,7 +767,7 @@ export class EmployerService {
         relationLoadStrategy: 'join',
         include: {
           user: { select: CANDIDATE_FIELDS },
-          jobPosting: { include: this.jobInclude() },
+          jobPosting: true,
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -747,10 +782,13 @@ export class EmployerService {
         company.lat,
         company.lng,
       );
-      const breakdown =
-        a.jobPosting.criteria.length > 0
-          ? this.matching.score(a.jobPosting.criteria, profile)
-          : null;
+      // Bewerbungen zeigen den Score immer — anders als die Kandidatensuche
+      // wird hier nichts ausgeblendet: wer sich beworben hat, gehört auf den
+      // Tisch, auch wenn ein Ausschlusskriterium nicht erfüllt ist.
+      const breakdown = this.matching.score(
+        this.matching.anforderungVon(a.jobPosting),
+        profile,
+      );
       const request = requestByUser.get(a.userId);
       return {
         id: a.id,

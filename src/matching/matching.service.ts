@@ -1,84 +1,32 @@
 import { Injectable } from '@nestjs/common';
-import { JobCriterion, MatchQuestion, User } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { User } from '@prisma/client';
 import { haversineKm } from './geo.util';
+import { katalog } from './catalog';
+import {
+  Anforderungsprofil,
+  Kandidatenprofil,
+  MatchBreakdown,
+  ScoreAdjustment,
+  bewerte,
+} from './scoring';
 
-/**
- * The matching engine.
- *
- * Score model (deliberately simple and fully explainable):
- *  - Per job posting the employer answers catalog questions optionally as a
- *    RANGE [minValue, maxValue] on the question's scale (single value ⇒
- *    min = max) plus a WEIGHT (0–5).
- *  - The worker's numeric value per question is derived from their onboarding
- *    answers (User.profileData) via MatchQuestion.answerKey (+ valueMap).
- *  - diff     = distance of the worker value to the range (0 inside).
- *  - penalty  = weight × diff            (exactly the spec'd "Gewichtung × Differenz")
- *  - maxDiff  = largest possible distance on the scale (worst case).
- *  - score    = 100 × (1 − Σ penalty / Σ (weight × maxDiff)), rounded.
- *
- * Every intermediate number is returned in the breakdown so the UI can show
- * the full computation (temporary transparency mode).
- */
+export type { MatchBreakdown, ScoreAdjustment, Anforderungsprofil, Kandidatenprofil };
 
-/** A worker's matching-relevant profile, extracted from User.profileData. */
-export interface WorkerProfile {
-  gewerke: string[];
-  erfahrungJahre: number | null;
-  zertifikate: string[];
-  bereitschaft: string[];
-  praeferenz: string | null;
-  answers: Record<string, unknown>; // merged survey + AI answers by question id
-  workLocations: {
-    id: string;
-    label: string;
-    lat: number;
-    lng: number;
-    radiusKm: number;
-  }[];
-  hasAvatar: boolean;
-}
-
-export interface CriterionBreakdown {
-  questionKey: string;
-  label: string;
-  unit: string;
-  scaleMin: number;
-  scaleMax: number;
-  /** The worker's derived numeric value (null = no answer → skipped). */
-  workerValue: number | null;
-  rangeMin: number;
-  rangeMax: number;
-  weight: number;
-  diff: number | null;
-  /** weight × diff */
-  penalty: number | null;
-  maxDiff: number;
-  maxPenalty: number;
-  skipped: boolean;
-}
-
-export interface ScoreAdjustment {
+/** Ein Arbeitsort des Handwerkers samt Umkreis. */
+export interface WorkLocation {
   id: string;
-  /** Sichtbare Begründung in der Transparenz-Ansicht. */
   label: string;
-  /** Abzug in Score-Punkten (positiv). */
-  points: number;
+  lat: number;
+  lng: number;
+  radiusKm: number;
 }
 
-export interface MatchBreakdown {
-  criteria: CriterionBreakdown[];
-  totalPenalty: number;
-  totalMaxPenalty: number;
-  /** Score aus den Kriterien allein (vor Abzügen). */
-  baseScore: number;
-  /** Abzüge aus dem Nutzerverhalten (abgelehnte Angebote). */
-  adjustments: ScoreAdjustment[];
-  /** Endscore 0–100 = baseScore − Σ adjustments (nie unter 0). */
-  score: number;
-  formula: string;
-  /** Reserved: score of the AI question round (not yet integrated). */
-  aiScore: number | null;
+/** Alles, was zum Bewerten und Anzeigen eines Handwerkers gebraucht wird. */
+export interface WorkerProfile {
+  /** Die Antworten aus dem Fragebogen. */
+  profil: Kandidatenprofil;
+  workLocations: WorkLocation[];
+  hasAvatar: boolean;
 }
 
 /**
@@ -102,73 +50,146 @@ export interface DeclineContext {
   gehaltDeclinedMax: number | null;
 }
 
-export type CriterionWithQuestion = JobCriterion & { question: MatchQuestion };
-
-const FORMULA =
-  'Score = 100 × (1 − Σ(Gewicht × Differenz) / Σ(Gewicht × maxDifferenz)); ' +
-  'Differenz = Abstand der Antwort zur Range (0 innerhalb).';
-
-/**
- * Ohne erreichbare Strafpunkte gibt es nichts zu teilen — die Formel oben
- * stünde dann als „100 × (1 − 0 / 0)" da, also als Division durch Null.
- * Das passiert, wenn die angegebene Spanne die gesamte Skala abdeckt
- * (z. B. „0 bis 40 Jahre Erfahrung"): das Kriterium ist dann bewertet, kann
- * den Score aber rechnerisch nie beeinflussen. Statt einer undefinierten
- * Rechnung wird genau das erklärt.
- */
-const FORMULA_NO_RANGE =
-  'Keines der bewerteten Kriterien kann den Score senken — die angegebenen ' +
-  'Spannen decken die gesamte Skala ab, jede Antwort liegt darin. Daher ' +
-  'gibt es keine erreichbaren Strafpunkte und der Score bleibt 100.';
-
-const FORMULA_NO_CRITERIA =
-  'Für diese Stelle sind keine bewertbaren Kriterien hinterlegt — ohne ' +
-  'Kriterien gilt Score = 100.';
-
 /**
  * Grenze für „zu weit weg“, solange sich aus den Absagen selbst keine
  * ableiten lässt (etwa weil der Nutzer keine Arbeitsorte hinterlegt hat).
  */
 const ZU_WEIT_FALLBACK_MIN = 45;
 
+// ── Überleitung alter Profile ───────────────────────────────────────────────
+// Konten aus der Zeit vor dem neuen Fragebogen haben ihre Antworten noch im
+// alten Format. Statt sie als „nichts angegeben" zu behandeln — was sie aus
+// jeder Trefferliste werfen würde — wird übersetzt, was sich sinnvoll
+// übersetzen lässt. Der Rest bleibt leer und wird schlicht nicht bewertet.
+
+const ALT_GEWERK_ZU_BEREICH: Record<string, string> = {
+  'Elektriker / Elektroniker': 'elektronik',
+  'Installateur / Klempner (SHK)': 'shk',
+  'Heizungs- & Lüftungsbauer': 'heizung_lueftung',
+  'Maler & Lackierer': 'maler',
+  'Tischler / Schreiner': 'tischler',
+  'Maurer / Betonbauer': 'maurer',
+  Dachdecker: 'dachdecker',
+  Fliesenleger: 'fliesenleger',
+  Zimmerer: 'zimmerer',
+  'Metallbauer / Schlosser': 'metallbau',
+  'KFZ-Mechatroniker': 'kfz',
+  Trockenbauer: 'trockenbau',
+  Gerüstbauer: 'geruestbau',
+  'Garten- & Landschaftsbau': 'galabau',
+  'Anderes Gewerk': 'sonstiges',
+};
+
+/** Jahre (alte Schieberegler-Antwort) auf die neue Stufenskala. */
+function jahreZuStufe(jahre: number): string {
+  if (jahre <= 0) return 'keine';
+  if (jahre <= 2) return '1_2';
+  if (jahre <= 5) return '3_5';
+  if (jahre <= 10) return '6_10';
+  return 'ueber_10';
+}
+
+function altesProfil(answers: Record<string, unknown>): Kandidatenprofil {
+  const strArr = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+
+  const gewerke = strArr(answers['ai_gewerke']);
+  const zertifikate = strArr(answers['ai_zertifikate']);
+  const bereitschaft = strArr(answers['survey_bereitschaft']);
+  const ziel = typeof answers['survey_ziel'] === 'string' ? answers['survey_ziel'] : null;
+
+  const ausbildung = zertifikate.some((z) => z === 'meister' || z === 'techniker')
+    ? 'techniker_meister'
+    : zertifikate.includes('geselle')
+      ? 'berufsausbildung'
+      : null;
+
+  return {
+    bereich: ALT_GEWERK_ZU_BEREICH[gewerke[0]] ?? null,
+    ausbildungsstatus: ausbildung,
+    beruf: null,
+    aufgaben: [],
+    erfahrung:
+      typeof answers['ai_erfahrung'] === 'number'
+        ? jahreZuStufe(answers['ai_erfahrung'])
+        : null,
+    prioritaeten: ziel && ziel !== 'naehe' ? [ziel] : [],
+    montage: bereitschaft.includes('montage') ? 'regelmaessig' : null,
+    fuehrerschein: zertifikate.includes('fuehrerschein') ? 'b' : null,
+    deutsch: null,
+    start: null,
+  };
+}
+
+const LEER: Kandidatenprofil = {
+  bereich: null,
+  ausbildungsstatus: null,
+  beruf: null,
+  aufgaben: [],
+  erfahrung: null,
+  prioritaeten: [],
+  montage: null,
+  fuehrerschein: null,
+  deutsch: null,
+  start: null,
+};
+
 @Injectable()
 export class MatchingService {
-  constructor(private readonly prisma: PrismaService) {}
-
-  /** The active question catalog, ordered for display. */
-  listQuestions(): Promise<MatchQuestion[]> {
-    return this.prisma.matchQuestion.findMany({
-      where: { active: true },
-      orderBy: { sortOrder: 'asc' },
-    });
+  /** Der Fachkatalog, wie ihn die Registrierung und der Inserats-Editor brauchen. */
+  katalog() {
+    return katalog();
   }
 
-  // ── Worker profile extraction ─────────────────────────────────────────────
+  // ── Profil ────────────────────────────────────────────────────────────────
 
   /**
-   * profileData is keyed by wizard step: "1" = survey, "3" = work locations,
-   * "4" = AI answers (see the registration steps in the frontend).
+   * Liest das Handwerkerprofil aus `profileData`.
+   *
+   * Die Antworten des neuen Fragebogens liegen unter `profil`. Fehlen sie,
+   * greift die Überleitung aus dem alten Format — siehe oben.
    */
   extractProfile(
     // `avatar` ist optional: Aufrufer, die nur ein anonymes Kandidatenprofil
     // brauchen, laden das große Bildfeld bewusst nicht mit.
     user: Pick<User, 'profileData'> & { avatar?: string | null },
   ): WorkerProfile {
-    const pd = (user.profileData ?? {}) as Record<
-      string,
-      Record<string, unknown> | undefined
-    >;
-    const survey = (pd['1']?.surveyAnswers ?? {}) as Record<string, unknown>;
-    const ai = (pd['4']?.aiAnswers ?? {}) as Record<string, unknown>;
-    const answers = { ...survey, ...ai };
+    const pd = (user.profileData ?? {}) as Record<string, unknown>;
 
     const strArr = (v: unknown): string[] =>
       Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 
-    const rawLocations = pd['3']?.workLocations;
+    const neu = (pd['profil'] ?? null) as Record<string, unknown> | null;
+    let profil: Kandidatenprofil;
+
+    if (neu && Object.keys(neu).length > 0) {
+      profil = {
+        bereich: str(neu['bereich']),
+        ausbildungsstatus: str(neu['ausbildungsstatus']),
+        beruf: str(neu['beruf']),
+        aufgaben: strArr(neu['aufgaben']),
+        erfahrung: str(neu['erfahrung']),
+        prioritaeten: strArr(neu['prioritaeten']),
+        montage: str(neu['montage']),
+        fuehrerschein: str(neu['fuehrerschein']),
+        deutsch: str(neu['deutsch']),
+        start: str(neu['start']),
+      };
+    } else {
+      const steps = pd as Record<string, Record<string, unknown> | undefined>;
+      const survey = (steps['1']?.surveyAnswers ?? {}) as Record<string, unknown>;
+      const ai = (steps['4']?.aiAnswers ?? {}) as Record<string, unknown>;
+      const answers = { ...survey, ...ai };
+      profil = Object.keys(answers).length > 0 ? altesProfil(answers) : { ...LEER };
+    }
+
+    const rawLocations = (pd['3'] as Record<string, unknown> | undefined)?.[
+      'workLocations'
+    ];
     const workLocations = (Array.isArray(rawLocations) ? rawLocations : [])
       .filter(
-        (l): l is WorkerProfile['workLocations'][number] =>
+        (l): l is WorkLocation =>
           !!l &&
           typeof (l as { lat?: unknown }).lat === 'number' &&
           typeof (l as { lng?: unknown }).lng === 'number',
@@ -181,135 +202,53 @@ export class MatchingService {
         radiusKm: typeof l.radiusKm === 'number' ? l.radiusKm : 30,
       }));
 
-    return {
-      gewerke: strArr(answers['ai_gewerke']),
-      erfahrungJahre:
-        typeof answers['ai_erfahrung'] === 'number'
-          ? (answers['ai_erfahrung'] as number)
-          : null,
-      zertifikate: strArr(answers['ai_zertifikate']),
-      bereitschaft: strArr(answers['survey_bereitschaft']),
-      praeferenz:
-        typeof answers['survey_ziel'] === 'string'
-          ? (answers['survey_ziel'] as string)
-          : null,
-      answers,
-      workLocations,
-      hasAvatar: !!user.avatar,
-    };
+    return { profil, workLocations, hasAvatar: !!user.avatar };
   }
+
+  // ── Bewertung ─────────────────────────────────────────────────────────────
 
   /**
-   * Derives the worker's numeric value for a catalog question.
-   *  - answerKey "aiAnswers.ai_erfahrung"          → numeric answer as-is
-   *  - answerKey "surveyAnswers.survey_umfeld"     → valueMap[stringAnswer]
-   *  - answerKey "aiAnswers.ai_zertifikate:meister"→ 1 if option chosen else 0
-   * Returns null when the worker has not answered (or the map has no entry,
-   * e.g. "egal" — deliberately unmapped = matches everything).
+   * Bewertet eine Stelle für einen Handwerker: erst Ausschluss, dann Punkte.
+   * Details der Regeln stehen in `scoring.ts`.
    */
-  workerValue(question: MatchQuestion, profile: WorkerProfile): number | null {
-    const [path, option] = question.answerKey.split(':');
-    const questionId = path.split('.').pop() ?? path;
-    const raw = profile.answers[questionId];
-
-    if (option !== undefined) {
-      if (raw == null) return null; // question not answered at all
-      return Array.isArray(raw) && raw.includes(option) ? 1 : 0;
-    }
-    if (typeof raw === 'number') return raw;
-    if (typeof raw === 'string' && question.valueMap) {
-      const mapped = (question.valueMap as Record<string, unknown>)[raw];
-      return typeof mapped === 'number' ? mapped : null;
-    }
-    return null;
+  score(anforderung: Anforderungsprofil, profile: WorkerProfile): MatchBreakdown {
+    return bewerte(anforderung, profile.profil);
   }
 
-  // ── Scoring ───────────────────────────────────────────────────────────────
-
-  score(
-    criteria: CriterionWithQuestion[],
-    profile: WorkerProfile,
-  ): MatchBreakdown {
-    const rows: CriterionBreakdown[] = [];
-    let totalPenalty = 0;
-    let totalMaxPenalty = 0;
-
-    for (const c of criteria.filter((c) => c.weight > 0)) {
-      const q = c.question;
-      const value = this.workerValue(q, profile);
-      // Worst case: the worker sits at the scale end farthest from the range.
-      const maxDiff = Math.max(c.minValue - q.scaleMin, q.scaleMax - c.maxValue);
-
-      if (value === null) {
-        rows.push({
-          questionKey: q.key,
-          label: q.label,
-          unit: q.unit,
-          scaleMin: q.scaleMin,
-          scaleMax: q.scaleMax,
-          workerValue: null,
-          rangeMin: c.minValue,
-          rangeMax: c.maxValue,
-          weight: c.weight,
-          diff: null,
-          penalty: null,
-          maxDiff,
-          maxPenalty: c.weight * maxDiff,
-          skipped: true,
-        });
-        continue;
-      }
-
-      const diff =
-        value < c.minValue
-          ? c.minValue - value
-          : value > c.maxValue
-            ? value - c.maxValue
-            : 0;
-      const penalty = c.weight * diff;
-      totalPenalty += penalty;
-      totalMaxPenalty += c.weight * maxDiff;
-
-      rows.push({
-        questionKey: q.key,
-        label: q.label,
-        unit: q.unit,
-        scaleMin: q.scaleMin,
-        scaleMax: q.scaleMax,
-        workerValue: value,
-        rangeMin: c.minValue,
-        rangeMax: c.maxValue,
-        weight: c.weight,
-        diff,
-        penalty,
-        maxDiff,
-        maxPenalty: c.weight * maxDiff,
-        skipped: false,
-      });
-    }
-
-    // Auf 0..100 klemmen: profileData ist ungeprüftes JSON, ein Wert
-    // ausserhalb der Fragenskala könnte sonst einen negativen Score erzeugen.
-    const score =
-      totalMaxPenalty > 0
-        ? Math.min(100, Math.max(0, Math.round(100 * (1 - totalPenalty / totalMaxPenalty))))
-        : 100;
-
-    const scored = rows.some((r) => !r.skipped);
+  /** Liest das Anforderungsprofil aus einem Inserat. */
+  anforderungVon(posting: {
+    bereiche: string[];
+    berufe: string[];
+    ausbildungMin: string | null;
+    aufgaben: string[];
+    aufgabenMin: number;
+    erfahrungMin: string | null;
+    erfahrungMax: string | null;
+    montageMin: string | null;
+    fuehrerscheinMin: string | null;
+    deutschMin: string | null;
+    gebotenes: string[];
+    startBis: string | null;
+    gewichte: unknown;
+  }): Anforderungsprofil {
+    const gewichte =
+      posting.gewichte && typeof posting.gewichte === 'object'
+        ? (posting.gewichte as Anforderungsprofil['gewichte'])
+        : undefined;
     return {
-      criteria: rows,
-      totalPenalty,
-      totalMaxPenalty,
-      baseScore: score,
-      adjustments: [],
-      score,
-      formula:
-        totalMaxPenalty > 0
-          ? FORMULA
-          : scored
-            ? FORMULA_NO_RANGE
-            : FORMULA_NO_CRITERIA,
-      aiScore: null,
+      bereiche: posting.bereiche,
+      berufe: posting.berufe,
+      ausbildungMin: posting.ausbildungMin,
+      aufgaben: posting.aufgaben,
+      aufgabenMin: posting.aufgabenMin,
+      erfahrungMin: posting.erfahrungMin,
+      erfahrungMax: posting.erfahrungMax,
+      montageMin: posting.montageMin,
+      fuehrerscheinMin: posting.fuehrerscheinMin,
+      deutschMin: posting.deutschMin,
+      gebotenes: posting.gebotenes,
+      startBis: posting.startBis,
+      gewichte,
     };
   }
 
@@ -382,7 +321,7 @@ export class MatchingService {
     breakdown: MatchBreakdown,
     adjustments: ScoreAdjustment[],
   ): MatchBreakdown {
-    if (adjustments.length === 0) return breakdown;
+    if (adjustments.length === 0 || !breakdown.passed) return breakdown;
     const total = adjustments.reduce((s, a) => s + a.points, 0);
     return {
       ...breakdown,
@@ -391,7 +330,7 @@ export class MatchingService {
     };
   }
 
-  // ── Distance ──────────────────────────────────────────────────────────────
+  // ── Entfernung ────────────────────────────────────────────────────────────
 
   /**
    * Nearest work location of the worker to a target point.
@@ -401,12 +340,11 @@ export class MatchingService {
     profile: WorkerProfile,
     lat: number | null,
     lng: number | null,
-  ): { location: WorkerProfile['workLocations'][number]; distanceKm: number } | null {
+  ): { location: WorkLocation; distanceKm: number } | null {
     if (lat == null || lng == null || profile.workLocations.length === 0) {
       return null;
     }
-    let best: { location: WorkerProfile['workLocations'][number]; distanceKm: number } | null =
-      null;
+    let best: { location: WorkLocation; distanceKm: number } | null = null;
     for (const loc of profile.workLocations) {
       const d = haversineKm(loc.lat, loc.lng, lat, lng);
       if (!best || d < best.distanceKm) best = { location: loc, distanceKm: d };

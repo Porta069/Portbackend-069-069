@@ -313,27 +313,6 @@ enum CompanySource {
 // row defines the numeric scale and HOW the worker's numeric value is derived
 // from User.profileData (answerKey + optional valueMap). Employers answer the
 // same questions per job posting via JobCriterion (range + weight).
-model MatchQuestion {
-  id            String  @id @default(uuid())
-  // Stable identifier used in code and breakdowns (e.g. "erfahrung").
-  key           String  @unique
-  label         String
-  hint          String  @default("")
-  scaleMin      Int
-  scaleMax      Int
-  unit          String  @default("")
-  // Where the worker's answer lives, e.g. "aiAnswers.ai_erfahrung" or
-  // "surveyAnswers.survey_umfeld". Checkbox membership uses "<path>:<option>".
-  answerKey     String
-  // Optional mapping of string answers to numbers, e.g. {"klein":1,"gross":3}.
-  valueMap      Json?
-  defaultWeight Int     @default(2)
-  sortOrder     Int     @default(0)
-  active        Boolean @default(true)
-
-  criteria JobCriterion[]
-}
-
 // ── Job postings ────────────────────────────────────────────────────────────
 model JobPosting {
   id          String        @id @default(uuid())
@@ -357,13 +336,33 @@ model JobPosting {
   urlaubstage            Int?
   startText              String  @default("Ab sofort")
   extras                 String[] @default([])
+  // ── Anforderungsprofil (Matching) ──────────────────────────────────────
+  // Werte stammen aus `src/matching/catalog.ts`. Leer bzw. null heißt
+  // durchgehend: dem Betrieb ist das egal — das Kriterium wird dann weder
+  // geprüft noch gewertet.
+  bereiche          String[] @default([])   // akzeptierte Ausbildungsbereiche (Ausschluss)
+  berufe            String[] @default([])   // bevorzugte Ausbildungsberufe (gewichtet)
+  ausbildungMin     String?                 // Mindest-Ausbildungsstand (Ausschluss)
+  aufgaben          String[] @default([])   // gesuchte Aufgabenbereiche
+  // Wie viele der gesuchten Aufgabenbereiche der Handwerker mindestens
+  // abdecken MUSS. 0 = keine Pflicht, die Bereiche zählen dann nur Punkte.
+  aufgabenMin       Int      @default(0)
+  erfahrungMin      String?
+  erfahrungMax      String?
+  montageMin        String?                 // verlangte Montagebereitschaft (Ausschluss)
+  fuehrerscheinMin  String?                 // verlangter Führerschein
+  deutschMin        String?                 // verlangtes Sprachniveau (Ausschluss)
+  gebotenes         String[] @default([])   // trifft auf die Prioritäten des Handwerkers
+  startBis          String?                 // bis wann besetzt werden soll
+  // Abweichende Gewichte je Kriterium (0–5); fehlt ein Wert, gilt die Vorgabe.
+  gewichte          Json?
+
   status      JobStatus     @default(ACTIVE)
   // Who created the posting (same semantics as Company.source).
   source      CompanySource @default(SELF)
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
-  criteria     JobCriterion[]
   offers       JobOffer[]
   applications JobApplication[]
   favorites    Favorite[]
@@ -380,24 +379,6 @@ enum JobStatus {
   ACTIVE
   PAUSED
   ARCHIVED
-}
-
-// ── Job criteria (the employer's answer + weight per question) ──────────────
-// The employer's optional answer to a match question, as a range on the
-// question's scale (single value ⇒ minValue = maxValue). Score contribution:
-// weight × distance of the worker's value to the range (0 inside the range).
-model JobCriterion {
-  id           String        @id @default(uuid())
-  jobPosting   JobPosting    @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
-  jobPostingId String
-  question     MatchQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
-  questionId   String
-  minValue     Float
-  maxValue     Float
-  // 0–5; 0 = recorded but ignored.
-  weight       Int
-
-  @@unique([jobPostingId, questionId])
 }
 
 // ── Applications of a worker to a posting ───────────────────────────────────
