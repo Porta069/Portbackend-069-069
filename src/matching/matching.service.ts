@@ -160,7 +160,16 @@ export class MatchingService {
       Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
     const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 
-    const neu = (pd['profil'] ?? null) as Record<string, unknown> | null;
+    // Die Registrierung legt ihre Schritte unter numerischen Schlüsseln ab
+    // (`profileData["2"] = { profil: … }`), die Einstellungen schreiben direkt
+    // nach `profil`. Beide Wege müssen gelesen werden können.
+    const ausSchritt = Object.values(pd).find(
+      (v): v is Record<string, unknown> =>
+        !!v && typeof v === 'object' && 'profil' in (v as object),
+    );
+    const neu = ((pd['profil'] ??
+      (ausSchritt?.['profil'] as unknown) ??
+      null) as Record<string, unknown> | null);
     let profil: Kandidatenprofil;
 
     if (neu && Object.keys(neu).length > 0) {

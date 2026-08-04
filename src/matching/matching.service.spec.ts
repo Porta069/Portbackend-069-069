@@ -111,6 +111,15 @@ describe('MatchingService.extractProfile', () => {
       expect(profil.prioritaeten).toEqual([]);
     });
 
+    it('findet das Profil auch im Schritt-Container der Registrierung', () => {
+      // Der Wizard speichert opake Schritt-Daten unter Zahlen-Schlüsseln.
+      const { profil } = service.extractProfile(
+        user({ '2': { profil: { bereich: 'elektronik', erfahrung: '6_10' } } }),
+      );
+      expect(profil.bereich).toBe('elektronik');
+      expect(profil.erfahrung).toBe('6_10');
+    });
+
     it('das neue Format hat Vorrang vor dem alten', () => {
       const { profil } = service.extractProfile(
         user({

@@ -326,7 +326,9 @@ export class JobsService {
   }
 
   private postingInclude() {
-    return { company: true, criteria: { include: { question: true } } } as const;
+    // Nur noch die Firma: das Anforderungsprofil steht in Spalten des
+    // Inserats, eine Kriterien-Relation gibt es nicht mehr.
+    return { company: true } as const;
   }
 
   async listJobs(payload: JwtPayload, q: ListJobsQueryDto): Promise<JobDto[]> {
@@ -355,7 +357,7 @@ export class JobsService {
         relationLoadStrategy: 'join',
         include: this.postingInclude(),
         orderBy: { createdAt: 'desc' },
-      }) as Promise<PostingWithRelations[]>,
+      }),
       this.favoriteIds(user.id),
       this.declineContext(user.id, profile),
     ]);
