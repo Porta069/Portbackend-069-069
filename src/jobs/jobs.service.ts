@@ -42,6 +42,19 @@ type PostingWithRelations = JobPosting & { company: Company };
  */
 const STATS_SCHWELLE = 50;
 
+/**
+ * Antwort der Jobbörse: die sichtbaren Stellen plus die Auskunft, wie viele
+ * wegen welcher Anforderung ausgeblendet wurden.
+ */
+export interface JobsResult {
+  jobs: JobDto[];
+  ausgeblendet: {
+    /** Anzahl ausgeblendeter Stellen (nicht Summe der Gründe). */
+    gesamt: number;
+    gruende: { key: string; label: string; anzahl: number }[];
+  };
+}
+
 /** Wire shape of a job in the worker UI (mirrors the frontend `Job` type). */
 export interface JobDto {
   id: string;
@@ -338,7 +351,7 @@ export class JobsService {
     return { company: true } as const;
   }
 
-  async listJobs(payload: JwtPayload, q: ListJobsQueryDto): Promise<JobDto[]> {
+  async listJobs(payload: JwtPayload, q: ListJobsQueryDto): Promise<JobsResult> {
     const user = await this.auth.getActiveUser(payload);
     const profile = this.matching.extractProfile(user);
 
@@ -374,11 +387,30 @@ export class JobsService {
       this.buildJobDto(p, profile, favorites, declineCtx),
     );
 
+    // Stellen, für die der Handwerker eine harte Anforderung nicht erfüllt,
+    // werden nicht vorgeschlagen — ein niedriger Prozentwert wäre hier die
+    // falsche Auskunft. Sie verschwinden aber nicht spurlos: die Gründe werden
+    // gezählt und mitgeliefert, damit die Oberfläche erklären kann, warum die
+    // Liste kurz ist, statt den Nutzer im Unklaren zu lassen.
+    const ausgeschlossen = jobs.filter((j) => !j.matchBreakdown.passed);
+    const proGrund = new Map<string, { label: string; anzahl: number }>();
+    for (const j of ausgeschlossen) {
+      for (const k of j.matchBreakdown.knockouts) {
+        const e = proGrund.get(k.key) ?? { label: k.label, anzahl: 0 };
+        e.anzahl++;
+        proGrund.set(k.key, e);
+      }
+    }
+    const ausgeblendet = {
+      // Anzahl der Stellen. Eine Stelle kann an mehreren Anforderungen
+      // scheitern — die Summe der Gründe ist deshalb ggf. größer.
+      gesamt: ausgeschlossen.length,
+      gruende: [...proGrund.entries()]
+        .map(([key, v]) => ({ key, label: v.label, anzahl: v.anzahl }))
+        .sort((a, b) => b.anzahl - a.anzahl),
+    };
+
     jobs = jobs.filter((j) => {
-      // Stellen, für die der Handwerker eine harte Anforderung nicht erfüllt,
-      // werden gar nicht erst vorgeschlagen — ein niedriger Prozentwert wäre
-      // hier die falsche Auskunft. Warum ausgeschlossen wurde, steht im
-      // Breakdown und lässt sich später gezielt anzeigen.
       if (!j.matchBreakdown.passed) return false;
       if (
         needle &&
@@ -426,7 +458,7 @@ export class JobsService {
       return byTravel(a, b);
     });
 
-    return jobs;
+    return { jobs, ausgeblendet };
   }
 
   async getJob(payload: JwtPayload, id: string): Promise<JobDto> {
