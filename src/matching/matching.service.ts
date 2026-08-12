@@ -5,12 +5,21 @@ import { katalog } from './catalog';
 import {
   Anforderungsprofil,
   Kandidatenprofil,
+  KriteriumKey,
+  Lage,
   MatchBreakdown,
+  STANDARD_GEWICHTE,
   ScoreAdjustment,
   bewerte,
 } from './scoring';
 
-export type { MatchBreakdown, ScoreAdjustment, Anforderungsprofil, Kandidatenprofil };
+export type {
+  MatchBreakdown,
+  ScoreAdjustment,
+  Anforderungsprofil,
+  Kandidatenprofil,
+  Lage,
+};
 
 /** Ein Arbeitsort des Handwerkers samt Umkreis. */
 export interface WorkLocation {
@@ -121,6 +130,29 @@ function altesProfil(answers: Record<string, unknown>): Kandidatenprofil {
   };
 }
 
+/**
+ * Gewichte aus der Datenbank sind ungeprüftes JSON.
+ *
+ * Steht dort etwas anderes als eine Zahl, rechnete die Formel mit `NaN`
+ * weiter — und weil `NaN > 0` falsch ist, fiel das Ergebnis auf „keine
+ * bewertbaren Kriterien" zurück: Ein Inserat mit kaputtem Gewicht war für
+ * JEDEN ein 100-%-Treffer. Unbrauchbare Werte werden deshalb verworfen, die
+ * Vorgabe greift dann.
+ */
+function pruefeGewichte(roh: unknown): Anforderungsprofil['gewichte'] {
+  if (!roh || typeof roh !== 'object' || Array.isArray(roh)) return undefined;
+  const raus: Partial<Record<KriteriumKey, number>> = {};
+  for (const key of Object.keys(STANDARD_GEWICHTE) as KriteriumKey[]) {
+    const wert = (roh as Record<string, unknown>)[key];
+    if (typeof wert !== 'number' || !Number.isFinite(wert)) continue;
+    // Auf 0–5 begrenzen: über den Admin- und Seed-Weg kommen Werte an der
+    // Eingabeprüfung vorbei, und ein Gewicht 999 macht jedes andere Kriterium
+    // rechnerisch bedeutungslos.
+    raus[key] = Math.min(5, Math.max(0, Math.round(wert)));
+  }
+  return Object.keys(raus).length > 0 ? raus : undefined;
+}
+
 const LEER: Kandidatenprofil = {
   bereich: null,
   ausbildungsstatus: null,
@@ -220,8 +252,12 @@ export class MatchingService {
    * Bewertet eine Stelle für einen Handwerker: erst Ausschluss, dann Punkte.
    * Details der Regeln stehen in `scoring.ts`.
    */
-  score(anforderung: Anforderungsprofil, profile: WorkerProfile): MatchBreakdown {
-    return bewerte(anforderung, profile.profil);
+  score(
+    anforderung: Anforderungsprofil,
+    profile: WorkerProfile,
+    lage?: Lage | null,
+  ): MatchBreakdown {
+    return bewerte(anforderung, profile.profil, lage ?? undefined);
   }
 
   /** Liest das Anforderungsprofil aus einem Inserat. */
@@ -240,10 +276,7 @@ export class MatchingService {
     startBis: string | null;
     gewichte: unknown;
   }): Anforderungsprofil {
-    const gewichte =
-      posting.gewichte && typeof posting.gewichte === 'object'
-        ? (posting.gewichte as Anforderungsprofil['gewichte'])
-        : undefined;
+    const gewichte = pruefeGewichte(posting.gewichte);
     return {
       bereiche: posting.bereiche,
       berufe: posting.berufe,
@@ -345,6 +378,35 @@ export class MatchingService {
    * Nearest work location of the worker to a target point.
    * Returns null when either side has no usable coordinates.
    */
+  /**
+   * Wo eine Stelle relativ zu den Arbeitsorten des Handwerkers liegt.
+   *
+   * `imRadius` prüft ALLE Orte, nicht nur den nächsten: Wer einen Ort 10 km
+   * entfernt mit 5 km Radius und einen zweiten 30 km entfernt mit 100 km
+   * Radius angegeben hat, will dort arbeiten — der nächstgelegene Ort allein
+   * hätte die Stelle fälschlich ausgeschlossen.
+   *
+   * `null`, wenn sich nichts sagen lässt (keine Arbeitsorte oder die Stelle
+   * hat keine Koordinaten). Dann wird die Entfernung nicht geprüft.
+   */
+  lage(
+    profile: WorkerProfile,
+    lat: number | null,
+    lng: number | null,
+  ): Lage | null {
+    const near = this.nearestLocation(profile, lat, lng);
+    if (!near) return null;
+    const imRadius = profile.workLocations.some(
+      (l) => haversineKm(l.lat, l.lng, lat!, lng!) <= l.radiusKm,
+    );
+    return {
+      km: near.distanceKm,
+      radiusKm: near.location.radiusKm,
+      ort: near.location.label,
+      imRadius,
+    };
+  }
+
   nearestLocation(
     profile: WorkerProfile,
     lat: number | null,

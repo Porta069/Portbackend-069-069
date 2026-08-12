@@ -163,9 +163,11 @@ export class JobsService {
     favoriteIds?: Set<string>,
     declineCtx?: DeclineContext,
   ): JobDto {
+    const lage = this.matching.lage(profile, posting.lat, posting.lng);
     let breakdown = this.matching.score(
       this.matching.anforderungVon(posting),
       profile,
+      lage,
     );
     const near = this.matching.nearestLocation(profile, posting.lat, posting.lng);
     const distanceKm = near ? Math.round(near.distanceKm * 10) / 10 : null;
@@ -228,7 +230,12 @@ export class JobsService {
         start: posting.startText,
         extras: posting.extras,
       },
-      recommended: bereichPasst && breakdown.score >= 70,
+      // „Empfohlen" nur mit Beleg: ein Inserat ohne Anforderungen erreicht
+      // zwar 100 %, hat aber nichts vorzuweisen, worauf sich das stützt.
+      recommended:
+        bereichPasst &&
+        breakdown.score >= 70 &&
+        breakdown.criteria.some((c) => !c.skipped),
       matchReasons: reasons,
       matchScore: breakdown.score,
       matchBreakdown: breakdown,
@@ -335,7 +342,7 @@ export class JobsService {
     const user = await this.auth.getActiveUser(payload);
     const profile = this.matching.extractProfile(user);
 
-    const gewerke = (q.gewerke ?? '')
+    const bereiche = (q.bereiche ?? '')
       .split(',')
       .map((g) => g.trim())
       .filter(Boolean);
@@ -349,7 +356,8 @@ export class JobsService {
       this.prisma.jobPosting.findMany({
         where: {
           status: 'ACTIVE',
-          ...(gewerke.length ? { gewerk: { in: gewerke } } : {}),
+          // `hasSome`: ein Inserat kann mehrere Bereiche akzeptieren.
+          ...(bereiche.length ? { bereiche: { hasSome: bereiche } } : {}),
           ...(q.minSalary ? { salaryMax: { gte: q.minSalary } } : {}),
           ...(q.abendsZuhause ? { montage: 'Jeden Abend zuhause' } : {}),
           ...(q.fahrzeitIstArbeitszeit ? { fahrzeitIstArbeitszeit: true } : {}),
@@ -380,7 +388,6 @@ export class JobsService {
       ) {
         return false;
       }
-      if (gewerke.length && !gewerke.includes(j.gewerk)) return false;
       if (
         q.maxTravelMinutes &&
         (j.travelMinutes == null || j.travelMinutes > q.maxTravelMinutes)
@@ -400,11 +407,21 @@ export class JobsService {
     const byTravel = (a: JobDto, b: JobDto) =>
       (a.travelMinutes ?? 9_999) - (b.travelMinutes ?? 9_999);
 
+    // Ein Inserat ohne jede Anforderung bekommt rechnerisch 100 % — es ist ja
+    // nichts unerfüllt. Damit stand ausgerechnet die Stelle ganz oben, über die
+    // wir am wenigsten wissen, noch vor einer, die auf fünf Kriterien passt.
+    // „Unbekannt" ist aber kein besserer Treffer als „nachweislich gut": ohne
+    // bewertetes Kriterium wird nach hinten sortiert. Der angezeigte Wert
+    // bleibt unangetastet — geschätzt wird hier nichts, nur eingeordnet.
+    const belegt = (j: JobDto) =>
+      j.matchBreakdown.criteria.some((c) => !c.skipped) ? 1 : 0;
+
     jobs.sort((a, b) => {
       if (q.sort === 'fahrzeit') return byTravel(a, b);
       if (q.sort === 'gehalt') return (b.salaryMax ?? 0) - (a.salaryMax ?? 0);
       if (q.sort === 'neueste') return b.createdAt.localeCompare(a.createdAt);
-      // Relevanz (Standard): bester Match zuerst, dann kurze Fahrzeit.
+      // Relevanz (Standard): belegte Treffer zuerst, dann Score, dann Fahrzeit.
+      if (belegt(a) !== belegt(b)) return belegt(b) - belegt(a);
       if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
       return byTravel(a, b);
     });

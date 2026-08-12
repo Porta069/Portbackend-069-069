@@ -30,7 +30,13 @@ async function main() {
     console.log(`\n── ${w.email} (${profile.profil.bereich}, ${profile.profil.erfahrung}) ──`);
     let sichtbar = 0;
     for (const p of postings) {
-      const b = matching.score(matching.anforderungVon(p), profile);
+      // Genau wie die Jobbörse: die Lage zu den Arbeitsorten gehört dazu,
+      // sonst prüft das Skript etwas anderes als das, was Nutzer sehen.
+      const b = matching.score(
+        matching.anforderungVon(p),
+        profile,
+        matching.lage(profile, p.lat, p.lng),
+      );
       const kurz = p.company.name.replace(/^TEST /, '').split(' [')[0];
       if (b.passed) {
         sichtbar++;

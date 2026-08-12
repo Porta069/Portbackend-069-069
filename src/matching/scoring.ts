@@ -78,6 +78,22 @@ export interface Anforderungsprofil {
   gewichte?: Partial<Record<KriteriumKey, number>>;
 }
 
+/**
+ * Wo die Stelle relativ zu den Arbeitsorten des Handwerkers liegt.
+ * Fehlt sie (keine Arbeitsorte oder keine Koordinaten), wird die Entfernung
+ * nicht geprüft — Unwissen darf niemanden ausschließen.
+ */
+export interface Lage {
+  /** Entfernung zum nächstgelegenen Arbeitsort in km. */
+  km: number;
+  /** Radius des Arbeitsorts, der die Stelle am ehesten abdeckt. */
+  radiusKm: number;
+  /** Name dieses Arbeitsorts — für die Begründung. */
+  ort: string;
+  /** Liegt die Stelle im Radius IRGENDEINES Arbeitsorts? */
+  imRadius: boolean;
+}
+
 export type KriteriumKey =
   | 'beruf'
   | 'aufgaben'
@@ -169,8 +185,23 @@ const runde2 = (n: number) => Math.round(n * 100) / 100;
 export function ausschlusskriterien(
   anf: Anforderungsprofil,
   k: Kandidatenprofil,
+  lage?: Lage,
 ): Ausschluss[] {
   const raus: Ausschluss[] = [];
+
+  // Die einzige Anforderung, die vom Handwerker selbst kommt: Er hat einen
+  // Arbeitsradius um seine Orte angegeben. Eine Stelle außerhalb davon zu
+  // zeigen, hieße seine ausdrückliche Angabe zu ignorieren — auch wenn sie
+  // fachlich perfekt passt.
+  if (lage && !lage.imRadius) {
+    raus.push({
+      key: 'entfernung',
+      label: 'Arbeitsradius',
+      reason:
+        `${Math.round(lage.km)} km entfernt — außerhalb deines Radius von ` +
+        `${lage.radiusKm} km um „${lage.ort}".`,
+    });
+  }
 
   if (anf.bereiche.length > 0 && k.bereich && !anf.bereiche.includes(k.bereich)) {
     raus.push({
@@ -376,8 +407,9 @@ function bewerteStart(
 export function bewerte(
   anf: Anforderungsprofil,
   k: Kandidatenprofil,
+  lage?: Lage,
 ): MatchBreakdown {
-  const knockouts = ausschlusskriterien(anf, k);
+  const knockouts = ausschlusskriterien(anf, k, lage);
   const gewicht = (key: KriteriumKey) =>
     anf.gewichte?.[key] ?? STANDARD_GEWICHTE[key];
 

@@ -38,11 +38,18 @@ export class ListJobsQueryDto {
   @MaxLength(120)
   query?: string;
 
-  /** Comma-separated exact GEWERKE values. */
+  /**
+   * Komma-getrennte Ausbildungsbereiche (Katalogwerte).
+   *
+   * Früher wurde hier nach dem Freitextfeld `gewerk` gefiltert — einer zweiten
+   * Fachsystematik neben der, nach der das Matching arbeitet. Beide konnten
+   * sich widersprechen: ein Inserat für den Bereich Elektronik, dessen
+   * Gewerk-Text anders lautete, verschwand aus dem Filter, obwohl es passte.
+   */
   @IsOptional()
   @IsString()
   @MaxLength(600)
-  gewerke?: string;
+  bereiche?: string;
 
   @IsOptional()
   @numberParam()

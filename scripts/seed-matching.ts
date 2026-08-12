@@ -596,6 +596,51 @@ const COMPANIES: SeedCompany[] = [
       },
     ],
   },
+  {
+    name: 'TEST Elektro Hamburg [Ausschluss: außerhalb des Arbeitsradius]',
+    email: 'elektro-hamburg@portawerk-test.de',
+    slogan: 'Testbetrieb: fachlich perfekt, aber 480 km entfernt',
+    description:
+      'Seed-Testdaten. Der EINZIGE Betrieb außerhalb von Heilbronn. Fachlich ' +
+      'passt er zu jedem Elektroniker — er liegt aber weit außerhalb des ' +
+      'Arbeitsradius der Testhandwerker und darf deshalb nicht erscheinen. ' +
+      'Prüft die Regel, dass der selbst gesetzte Radius respektiert wird.\n\n' +
+      'Elektrotechnik für Hafen- und Industrieanlagen.',
+    strasse: 'Hafenstraße 4',
+    plz: '20457',
+    lat: 53.5453,
+    lng: 9.9884,
+    gruendungsjahr: '1995',
+    mitarbeiter: '110',
+    website: 'https://elektro-hamburg.example.de',
+    montage: 'Jeden Abend zuhause',
+    urlaubstage: 30,
+    benefits: ['Übertarifliche Bezahlung', 'Firmenwagen'],
+    kontaktName: 'Testkontakt Hamburg',
+    jobs: [
+      {
+        title: 'Elektroniker Industrieanlagen [Ausschluss: Entfernung]',
+        gewerk: 'Elektriker / Elektroniker',
+        description:
+          'Test-Inserat weit außerhalb des Arbeitsradius. Fachlich passend, ' +
+          'geografisch nicht — darf in Heilbronn nicht auftauchen.\n\n' +
+          'Instandhaltung und Umbau von Anlagen im Hafengebiet.',
+        tags: ['Industrie', 'Test: Entfernung'],
+        salaryMin: 3500,
+        salaryMax: 4300,
+        montage: 'Jeden Abend zuhause',
+        fahrzeitIstArbeitszeit: false,
+        startpunkt: 'Betrieb',
+        urlaubstage: 30,
+        extras: ['Firmenwagen'],
+        anforderung: {
+          bereiche: ['elektronik'],
+          aufgaben: ['betriebstechnik', 'instandhaltung_wartung'],
+          gebotenes: ['gehalt', 'firmenwagen'],
+        },
+      },
+    ],
+  },
 ];
 
 // ── Ausführung ───────────────────────────────────────────────────────────────
@@ -747,10 +792,10 @@ async function main() {
 
   console.log(`\nFertig. Passwort für alle Testkonten: ${TEST_PASSWORD}`);
   console.log('\nErwartet in der Jobbörse (prüfen mit scripts/matching-matrix.ts):');
-  console.log('  testhandwerker@ → 5 von 9 Stellen — raus bei Meisterpflicht,');
-  console.log('                    SHK, Dauermontage und „2 von 3 Bereichen"');
-  console.log('  testmeister@    → 8 von 9 — nur die SHK-Stelle bleibt zu');
-  console.log('  testshk@        → 2 von 9 — SHK-Stelle und die offene');
+  console.log('  testhandwerker@ → 5 von 10 — raus bei Meisterpflicht, SHK,');
+  console.log('                    Dauermontage, „2 von 3 Bereichen" und Hamburg');
+  console.log('  testmeister@    → 8 von 10 — SHK und Hamburg bleiben zu');
+  console.log('  testshk@        → 2 von 10 — SHK-Stelle und die offene');
 }
 
 main()

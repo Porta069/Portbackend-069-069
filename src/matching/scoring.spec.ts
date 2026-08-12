@@ -1,6 +1,7 @@
 import {
   Anforderungsprofil,
   Kandidatenprofil,
+  Lage,
   bewerte,
   ausschlusskriterien,
 } from './scoring';
@@ -132,6 +133,47 @@ describe('Matching', () => {
       });
       const leer = kandidat({ ausbildungsstatus: null, montage: null, deutsch: null });
       expect(ausschlusskriterien(anf, leer)).toEqual([]);
+    });
+
+    describe('Arbeitsradius des Handwerkers', () => {
+      const lage = (over: Partial<Lage> = {}): Lage => ({
+        km: 25,
+        radiusKm: 40,
+        ort: 'Heilbronn',
+        imRadius: true,
+        ...over,
+      });
+
+      it('innerhalb des Radius ändert sich nichts', () => {
+        expect(ausschlusskriterien(anforderung(), kandidat(), lage())).toEqual([]);
+      });
+
+      it('außerhalb JEDES Radius wird die Stelle ausgeschlossen', () => {
+        const raus = ausschlusskriterien(
+          anforderung(),
+          kandidat(),
+          lage({ km: 380, imRadius: false }),
+        );
+        expect(raus.map((r) => r.key)).toEqual(['entfernung']);
+        expect(raus[0].reason).toContain('380 km');
+        expect(raus[0].reason).toContain('Heilbronn');
+      });
+
+      it('ohne bekannte Lage wird die Entfernung nicht geprüft', () => {
+        // Kein Arbeitsort hinterlegt oder Stelle ohne Koordinaten: Unwissen
+        // darf niemanden ausschließen.
+        expect(ausschlusskriterien(anforderung(), kandidat(), undefined)).toEqual([]);
+      });
+
+      it('eine fachlich perfekte Stelle außerhalb des Radius fällt trotzdem raus', () => {
+        const b = bewerte(
+          anforderung({ aufgaben: ['betriebstechnik'] }),
+          kandidat(),
+          lage({ km: 500, imRadius: false }),
+        );
+        expect(b.passed).toBe(false);
+        expect(b.score).toBe(0);
+      });
     });
 
     it('eine ausgeschlossene Stelle bekommt Score 0 und passed=false', () => {

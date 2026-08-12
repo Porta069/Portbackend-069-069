@@ -148,6 +148,89 @@ describe('MatchingService.extractProfile', () => {
     });
   });
 
+  describe('Lage zu den Arbeitsorten', () => {
+    const mitOrten = (orte: { label: string; lat: number; lng: number; radiusKm: number }[]) =>
+      service.extractProfile(
+        user({
+          '3': {
+            workLocations: orte.map((o, i) => ({ id: String(i), ...o })),
+          },
+        }),
+      );
+
+    // Heilbronn 49.14/9.21 · Stuttgart 48.78/9.18 (~40 km) · Hamburg 53.55/9.99
+    it('erkennt eine Stelle innerhalb des Radius', () => {
+      const p = mitOrten([{ label: 'Heilbronn', lat: 49.14, lng: 9.21, radiusKm: 50 }]);
+      const l = service.lage(p, 48.78, 9.18)!;
+      expect(l.imRadius).toBe(true);
+      expect(l.ort).toBe('Heilbronn');
+    });
+
+    it('erkennt eine Stelle außerhalb des Radius', () => {
+      const p = mitOrten([{ label: 'Heilbronn', lat: 49.14, lng: 9.21, radiusKm: 30 }]);
+      const l = service.lage(p, 53.55, 9.99)!;
+      expect(l.imRadius).toBe(false);
+      expect(Math.round(l.km)).toBeGreaterThan(400);
+    });
+
+    // Der eigentliche Stolperstein: der NÄCHSTE Ort ist nicht zwingend der,
+    // dessen Radius die Stelle abdeckt.
+    it('ein weiter entfernter Ort mit großem Radius zählt trotzdem', () => {
+      const p = mitOrten([
+        { label: 'Enger Ort', lat: 49.14, lng: 9.21, radiusKm: 5 },
+        { label: 'Weiter Ort', lat: 48.40, lng: 9.99, radiusKm: 200 },
+      ]);
+      const l = service.lage(p, 48.78, 9.18)!;
+      // Nächster Ort ist der enge — die Stelle liegt außerhalb SEINES Radius,
+      // aber innerhalb des zweiten. Sie darf nicht ausgeschlossen werden.
+      expect(l.ort).toBe('Enger Ort');
+      expect(l.imRadius).toBe(true);
+    });
+
+    it('ohne Arbeitsorte oder ohne Koordinaten gibt es keine Lage', () => {
+      expect(service.lage(mitOrten([]), 49.1, 9.2)).toBeNull();
+      const p = mitOrten([{ label: 'HN', lat: 49.14, lng: 9.21, radiusKm: 30 }]);
+      expect(service.lage(p, null, null)).toBeNull();
+    });
+  });
+
+  describe('Gewichte aus der Datenbank', () => {
+    const anf = (gewichte: unknown) =>
+      service.anforderungVon({
+        bereiche: [], berufe: [], ausbildungMin: null, aufgaben: [], aufgabenMin: 0,
+        erfahrungMin: null, erfahrungMax: null, montageMin: null,
+        fuehrerscheinMin: null, deutschMin: null, gebotenes: [], startBis: null,
+        gewichte,
+      });
+
+    it('übernimmt gültige Gewichte', () => {
+      expect(anf({ aufgaben: 5, erfahrung: 0 }).gewichte).toEqual({
+        aufgaben: 5,
+        erfahrung: 0,
+      });
+    });
+
+    // Vorher wurde mit NaN weitergerechnet — und weil `NaN > 0` falsch ist,
+    // galt das Inserat als „ohne bewertbare Kriterien" und war für JEDEN ein
+    // 100-%-Treffer.
+    it('verwirft unbrauchbare Werte, statt mit NaN zu rechnen', () => {
+      expect(anf({ aufgaben: 'abc' }).gewichte).toBeUndefined();
+      expect(anf({ aufgaben: null }).gewichte).toBeUndefined();
+      expect(anf('kaputt').gewichte).toBeUndefined();
+      expect(anf(null).gewichte).toBeUndefined();
+    });
+
+    it('begrenzt Werte auf 0 bis 5', () => {
+      expect(anf({ aufgaben: 999 }).gewichte).toEqual({ aufgaben: 5 });
+      expect(anf({ aufgaben: -7 }).gewichte).toEqual({ aufgaben: 0 });
+      expect(anf({ aufgaben: 3.6 }).gewichte).toEqual({ aufgaben: 4 });
+    });
+
+    it('ignoriert unbekannte Schlüssel', () => {
+      expect(anf({ quatsch: 5 }).gewichte).toBeUndefined();
+    });
+  });
+
   it('merkt sich, ob ein Profilbild hinterlegt ist', () => {
     expect(service.extractProfile(user({}, 'data:image/jpeg;base64,x')).hasAvatar).toBe(
       true,
