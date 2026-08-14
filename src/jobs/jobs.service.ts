@@ -20,6 +20,7 @@ import {
   WorkerProfile,
 } from '../matching/matching.service';
 import { RoutingService } from '../matching/routing.service';
+import { PartnerService } from '../partner/partner.service';
 import { haversineKm, travelMinutes } from '../matching/geo.util';
 import {
   APPLICATION_STATUS_DE,
@@ -109,6 +110,7 @@ export class JobsService {
     private readonly auth: AuthService,
     private readonly matching: MatchingService,
     private readonly routing: RoutingService,
+    private readonly partner: PartnerService,
   ) {}
 
   /**
@@ -534,6 +536,9 @@ export class JobsService {
       const app = await this.prisma.jobApplication.create({
         data: { jobPostingId: posting.id, userId: user.id },
       });
+      // Wurde dieser Handwerker geworben, ist er ab jetzt im Vermittlungs-
+      // prozess. Läuft nebenher: die Bewerbung darf nicht daran scheitern.
+      void this.partner.fortschreiben(user.id, 'IN_PLACEMENT');
       return { id: app.id, status: APPLICATION_STATUS_DE[app.status] };
     } catch (e) {
       if (
@@ -619,6 +624,11 @@ export class JobsService {
         declineReason: dto.decision === 'abgelehnt' ? (dto.reason ?? null) : null,
       },
     });
+    // Ein angenommenes Angebot IST die Vermittlung — ab hier ist die Prämie
+    // des Werbers fällig.
+    if (status === 'ACCEPTED') {
+      void this.partner.fortschreiben(user.id, 'PLACED');
+    }
     return { status: dto.decision };
   }
 

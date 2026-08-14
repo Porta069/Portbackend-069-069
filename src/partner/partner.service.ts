@@ -21,8 +21,14 @@ import { RegisterPartnerDto } from './dto/register-partner.dto';
 import { LoginPartnerDto } from './dto/login-partner.dto';
 import { UpdatePayoutDto } from './dto/payout.dto';
 
-// Fixed reward per successful placement: 100 €.
-const REWARD_CENTS = 10_000;
+/**
+ * Vorgabe-Prämie je erfolgreicher Vermittlung: 100 €.
+ * Maßgeblich ist der Wert aus `admin.setting` — siehe `praemieCents()`.
+ */
+const REWARD_CENTS_FALLBACK = 10_000;
+
+/** Innerhalb dieser Spanne zählt ein wiederholter Klick derselben IP nicht neu. */
+const CLICK_DEBOUNCE_MS = 10 * 60 * 1000;
 // Partner sessions are long-lived (there is no separate login page yet), so the
 // stored token keeps them signed in for a month.
 const PARTNER_TTL_SECONDS = 60 * 60 * 24 * 30;
@@ -537,8 +543,18 @@ export class PartnerService {
    * Best-effort: when a Handwerker registers with ?ref=<slug>, record a referral
    * for the matching partner. Never throws into the registration path.
    */
+  /**
+   * Verknüpft einen frisch registrierten Handwerker mit seinem Werber.
+   *
+   * `referrer` ist entweder die Partner-ID aus dem Attributions-Cookie oder
+   * ein von Hand eingetippter Slug — beide Wege führen hierher, damit es
+   * genau eine Stelle gibt, an der ein Referral entsteht.
+   *
+   * Nichts davon darf die Registrierung scheitern lassen: Wer sich anmeldet,
+   * hat ein Konto verdient, auch wenn die Provisionszuordnung klemmt.
+   */
   async linkReferral(
-    referredBy: string,
+    referrer: string,
     user: {
       id: string;
       firstName: string;
@@ -549,29 +565,48 @@ export class PartnerService {
     },
   ): Promise<void> {
     try {
-      const slug = this.normalizeSlug(referredBy);
-      if (slug.length < 3) return;
-      const partner = await this.prisma.partner.findUnique({ where: { slug } });
-      if (!partner) return;
-      // No self-referral: a partner signing up through their own link earns nothing.
-      const sameContact =
+      const partner = await this.findePartner(referrer);
+      if (!partner || partner.status !== 'ACTIVE') return;
+
+      // Kein Selbst-Werben: Wer sich über den eigenen Link anmeldet, verdient
+      // nichts. Geprüft über Telefon und E-Mail, weil der Partner-Account
+      // eigenständig neben dem Nutzer-Account steht.
+      const selbst =
         (user.phone && user.phone === partner.phone) ||
         (user.email &&
           partner.email &&
           user.email.toLowerCase() === partner.email.toLowerCase());
-      if (sameContact) return;
+      if (selbst) {
+        this.logger.log(`Selbst-Werbung unterbunden (Partner ${partner.id}).`);
+        return;
+      }
+
       const lastInitial = user.lastName?.trim()?.[0];
       const candidateName = `${user.firstName.trim()}${
         lastInitial ? ` ${lastInitial}.` : ''
       }`;
-      await this.prisma.referral.create({
-        data: {
+
+      // Idempotent: `referredUserId` ist eindeutig — ein zweiter Anlauf für
+      // denselben Nutzer aktualisiert nur die Anzeigedaten, statt zu scheitern
+      // oder einen zweiten Referral anzulegen.
+      await this.prisma.referral.upsert({
+        where: { referredUserId: user.id },
+        create: {
           partnerId: partner.id,
           referredUserId: user.id,
           candidateName,
           candidateTrade: user.trade?.trim() || null,
         },
+        update: { candidateName, candidateTrade: user.trade?.trim() || null },
       });
+
+      // Der Nutzer trägt die Partner-ID, nicht den Slug: ein Partner kann
+      // seinen Slug ändern, seine Identität nicht.
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { referredBy: partner.id },
+      });
+
       await this.audit.record({
         action: 'partner.referral_created',
         entityType: 'Partner',
@@ -579,11 +614,74 @@ export class PartnerService {
         metadata: { via: 'registration' },
       });
     } catch (err) {
-      // A duplicate (same user already linked) or any failure must not break
-      // registration — just log it.
       this.logger.warn(
-        `linkReferral failed for ref="${referredBy}": ${
-          err instanceof Error ? err.message : 'unknown'
+        `linkReferral fehlgeschlagen für "${referrer}": ${
+          err instanceof Error ? err.message : 'unbekannt'
+        }`,
+      );
+    }
+  }
+
+  /** Findet einen Partner über seine ID oder seinen Slug. */
+  private async findePartner(referrer: string): Promise<Partner | null> {
+    const roh = (referrer ?? '').trim();
+    if (!roh) return null;
+    // UUID → Partner-ID aus dem Cookie; alles andere als Slug behandeln.
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roh)) {
+      return this.prisma.partner.findUnique({ where: { id: roh } });
+    }
+    const slug = this.normalizeSlug(roh);
+    if (slug.length < 3) return null;
+    return this.prisma.partner.findUnique({ where: { slug } });
+  }
+
+  // ── Fortschreibung durch echte Ereignisse ───────────────────────────────────
+
+  /**
+   * Hebt den Referral eines Nutzers auf einen weiter fortgeschrittenen Stand.
+   *
+   * Nur vorwärts: Ein bereits vermittelter oder ausgezahlter Referral wird
+   * durch eine spätere Bewerbung nicht zurückgestuft — und ein ausgezahlter
+   * bleibt in jedem Fall unangetastet, weil daran Geld hängt.
+   *
+   * Läuft neben dem auslösenden Vorgang: eine Bewerbung darf nicht daran
+   * scheitern, dass die Provisionsverwaltung klemmt.
+   */
+  async fortschreiben(
+    referredUserId: string,
+    ziel: 'IN_PLACEMENT' | 'PLACED',
+  ): Promise<void> {
+    try {
+      const ref = await this.prisma.referral.findUnique({
+        where: { referredUserId },
+      });
+      if (!ref || ref.paidAt) return;
+
+      const rang: Record<ReferralStatus, number> = {
+        REGISTERED: 0,
+        IN_PLACEMENT: 1,
+        PLACED: 2,
+        PAID: 3,
+      };
+      if (rang[ref.status] >= rang[ziel]) return;
+
+      const data: Prisma.ReferralUpdateInput = { status: ziel };
+      if (ziel === 'PLACED') {
+        data.rewardCents = await this.praemieCents();
+        data.placedAt = ref.placedAt ?? new Date();
+      }
+      await this.prisma.referral.update({ where: { id: ref.id }, data });
+
+      await this.audit.record({
+        action: 'partner.referral_status_changed',
+        entityType: 'Referral',
+        entityId: ref.id,
+        metadata: { status: ziel, via: 'automatisch' },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Referral-Fortschreibung fehlgeschlagen (${referredUserId} → ${ziel}): ${
+          err instanceof Error ? err.message : 'unbekannt'
         }`,
       );
     }
@@ -591,20 +689,89 @@ export class PartnerService {
 
   // ── Click tracking ──────────────────────────────────────────────────────────
 
-  async recordClick(slugInput: string, ip?: string): Promise<{ ok: boolean }> {
+  /**
+   * Klick auf einen Empfehlungs-Link.
+   *
+   * Es wird nur gezählt, was einem aktiven Partner gehört. Vorher landete
+   * jeder Slug in der Tabelle — auch frei erfundene wie „gibtesnichtxyz" —,
+   * womit die Klickzahlen eines Partners von Fremdaufrufen abhingen und
+   * niemand sagen konnte, welcher Eintrag etwas bedeutet.
+   *
+   * Die zurückgegebene `partnerId` ist die Grundlage der Zuordnung: nur wenn
+   * sie kommt, setzt die Route das Attributions-Cookie.
+   */
+  async recordClick(
+    slugInput: string,
+    ip?: string,
+  ): Promise<{ ok: boolean; partnerId?: string }> {
     const slug = this.normalizeSlug(slugInput);
     if (slug.length < 3) return { ok: false };
+
+    const partner = await this.prisma.partner.findUnique({
+      where: { slug },
+      select: { id: true, status: true },
+    });
+    if (!partner || partner.status !== 'ACTIVE') return { ok: false };
+
+    const ipHash = ip ? hmacHash(`click:${ip}`, this.hashingSecret) : null;
     try {
-      await this.prisma.referralClick.create({
-        data: {
-          slug,
-          ipHash: ip ? hmacHash(`click:${ip}`, this.hashingSecret) : null,
-        },
-      });
+      // Entprellen: derselbe Besucher, der binnen weniger Minuten mehrfach auf
+      // denselben Link tippt, ist ein Klick — nicht fünf.
+      const kuerzlich = ipHash
+        ? await this.prisma.referralClick.findFirst({
+            where: {
+              slug,
+              ipHash,
+              createdAt: { gt: new Date(Date.now() - CLICK_DEBOUNCE_MS) },
+            },
+            select: { id: true },
+          })
+        : null;
+      if (!kuerzlich) {
+        await this.prisma.referralClick.create({ data: { slug, ipHash } });
+      }
     } catch {
-      /* click tracking is best-effort */
+      /* Klickzählung ist nachrangig — die Zuordnung darf sie nie aufhalten. */
     }
-    return { ok: true };
+    return { ok: true, partnerId: partner.id };
+  }
+
+  // ── Prämienhöhe ─────────────────────────────────────────────────────────────
+
+  /**
+   * Prämie je Vermittlung in Cent — aus `admin.setting`, key `pricing`,
+   * Feld `referral_reward_cents`.
+   *
+   * Bewusst dieselbe Quelle, die das Admin-Dashboard beschreibt: eine zweite
+   * Zahl im Code würde beim ersten Preiswechsel still auseinanderlaufen, und
+   * gutgeschrieben würde dann etwas anderes als angezeigt.
+   *
+   * Das Schema `admin` gehört dem Dashboard und existiert nicht in jeder
+   * Umgebung (lokal etwa nicht). Fehlt es, greift die Vorgabe, statt die
+   * Statusänderung scheitern zu lassen.
+   */
+  private praemieCache: { cents: number; bis: number } | null = null;
+
+  async praemieCents(): Promise<number> {
+    if (this.praemieCache && Date.now() < this.praemieCache.bis) {
+      return this.praemieCache.cents;
+    }
+    let cents = REWARD_CENTS_FALLBACK;
+    try {
+      const rows = await this.prisma.$queryRaw<{ value: unknown }[]>`
+        select value from admin.setting where key = 'pricing' limit 1`;
+      const wert = (rows[0]?.value ?? {}) as Record<string, unknown>;
+      const roh = wert['referral_reward_cents'];
+      if (typeof roh === 'number' && Number.isFinite(roh) && roh >= 0) {
+        cents = Math.round(roh);
+      }
+    } catch {
+      this.logger.warn(
+        'admin.setting nicht lesbar — Prämie fällt auf die Vorgabe zurück.',
+      );
+    }
+    this.praemieCache = { cents, bis: Date.now() + 60_000 };
+    return cents;
   }
 
   // ── Admin: placement lifecycle ──────────────────────────────────────────────
@@ -634,10 +801,10 @@ export class PartnerService {
 
     const data: Prisma.ReferralUpdateInput = { status };
     if (status === 'PLACED') {
-      data.rewardCents = REWARD_CENTS;
+      data.rewardCents = await this.praemieCents();
       data.placedAt = ref.placedAt ?? new Date();
     } else if (status === 'PAID') {
-      data.rewardCents = ref.rewardCents || REWARD_CENTS;
+      data.rewardCents = ref.rewardCents || (await this.praemieCents());
       data.placedAt = ref.placedAt ?? new Date();
       data.paidAt = new Date();
     } else if (status === 'REGISTERED' || status === 'IN_PLACEMENT') {

@@ -23,6 +23,7 @@ import {
   WorkerProfile,
 } from '../matching/matching.service';
 import { GeocodingService } from '../matching/geocoding.service';
+import { PartnerService } from '../partner/partner.service';
 import { hashPassword } from '../common/crypto/password.util';
 import { normalizeEmail, normalizePhone } from '../common/contact/contact.util';
 import {
@@ -120,6 +121,7 @@ export class EmployerService {
     private readonly audit: AuditService,
     private readonly matching: MatchingService,
     private readonly geo: GeocodingService,
+    private readonly partner: PartnerService,
   ) {}
 
   // ── Access ────────────────────────────────────────────────────────────────
@@ -825,6 +827,13 @@ export class EmployerService {
       where: { id: app.id },
       data: { status },
     });
+    // Eine Zusage ist die Vermittlung; „im Gespräch" und „gesehen" sind
+    // Zwischenstände. Nur vorwärts — zurückgestuft wird ein Referral nie.
+    if (status === 'ACCEPTED') {
+      void this.partner.fortschreiben(app.userId, 'PLACED');
+    } else if (status === 'INTERVIEW' || status === 'SEEN') {
+      void this.partner.fortschreiben(app.userId, 'IN_PLACEMENT');
+    }
     return { id: updated.id, status: APPLICATION_STATUS_DE[updated.status] };
   }
 
