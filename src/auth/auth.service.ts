@@ -213,6 +213,7 @@ export class AuthService {
         if (JSON.stringify(profileData).length > 200_000) {
           throw new BadRequestException('Registration data is too large');
         }
+        const jetzt = new Date();
         const created = await tx.user.create({
           data: {
             email,
@@ -221,6 +222,12 @@ export class AuthService {
             lastName: dto.lastName.trim(),
             phone,
             referredBy: dto.referredBy?.trim() || null,
+            // Zeitpunkt UND Fassungsstand: ohne den Fassungsstand lässt sich
+            // später nicht sagen, welchem Text zugestimmt wurde.
+            agbAcceptedAt: jetzt,
+            agbVersion: dto.rechtstexteVersion,
+            datenschutzAcceptedAt: jetzt,
+            datenschutzVersion: dto.rechtstexteVersion,
             // Persist every onboarding answer (survey step 1 + AI step 4) so the
             // full profile is queryable per-user later.
             profileData,
@@ -249,6 +256,9 @@ export class AuthService {
       entityType: 'User',
       entityId: user.id,
       actorId: user.id,
+      // Der Fassungsstand gehört ins Protokoll: die Spalten am Konto können
+      // sich später ändern, ein Protokolleintrag nicht.
+      metadata: { rechtstexteVersion: dto.rechtstexteVersion },
       ip,
     });
 
@@ -653,6 +663,17 @@ export class AuthService {
         createdAt: user.createdAt.toISOString(),
         lastLoginAt: user.lastLoginAt
           ? user.lastLoginAt.toISOString()
+          : null,
+      },
+      zustimmung: {
+        nutzungsbedingungen: user.agbAcceptedAt
+          ? { am: user.agbAcceptedAt.toISOString(), fassung: user.agbVersion }
+          : null,
+        datenschutzerklaerung: user.datenschutzAcceptedAt
+          ? {
+              am: user.datenschutzAcceptedAt.toISOString(),
+              fassung: user.datenschutzVersion,
+            }
           : null,
       },
       onboardingAnswers: user.profileData ?? null,

@@ -1,4 +1,6 @@
 import {
+  Equals,
+  IsBoolean,
   IsEmail,
   IsOptional,
   IsString,
@@ -57,4 +59,28 @@ export class CompleteRegistrationDto {
   @IsString()
   @MaxLength(60)
   referredBy?: string;
+
+  /**
+   * Zustimmung zu den Nutzungsbedingungen und zur Datenschutzerklärung.
+   *
+   * Bewusst PFLICHT und serverseitig geprüft: Bisher hingen beide Häkchen
+   * allein am Formular. Wer die Anfrage direkt stellt, konnte ein Konto ohne
+   * jede Zustimmung anlegen — und nachweisbar war ohnehin nichts.
+   */
+  @IsBoolean()
+  @Equals(true, {
+    message: 'Ohne Zustimmung zu den Nutzungsbedingungen ist keine Registrierung möglich.',
+  })
+  agbAccepted!: boolean;
+
+  @IsBoolean()
+  @Equals(true, {
+    message: 'Ohne Zustimmung zur Datenschutzerklärung ist keine Registrierung möglich.',
+  })
+  datenschutzAccepted!: boolean;
+
+  /** Fassungsstand der Texte, denen zugestimmt wurde (z. B. „2026-08-16"). */
+  @IsString()
+  @MaxLength(20)
+  rechtstexteVersion!: string;
 }

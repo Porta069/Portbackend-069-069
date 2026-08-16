@@ -214,6 +214,15 @@ model User {
   role         UserRole   @default(APPLICANT)
   // Only set for EMPLOYER accounts (legacy display name; see `company`).
   companyName  String?
+  // ── Zustimmung zu Nutzungsbedingungen und Datenschutzerklärung ──────────
+  // Ohne Nachweis ist eine Zustimmung im Streitfall wertlos: Es muss belegbar
+  // sein, WANN und WELCHEM Textstand jemand zugestimmt hat. Die Häkchen im
+  // Formular allein reichen dafür nicht — sie verschwinden mit dem Browser.
+  agbAcceptedAt      DateTime?
+  agbVersion         String?
+  datenschutzAcceptedAt DateTime?
+  datenschutzVersion    String?
+
   // EMPLOYER accounts belong to exactly one company.
   company      Company?   @relation(fields: [companyId], references: [id])
   companyId    String?
